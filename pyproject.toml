@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cropland-quality-workflow-toolkit"
+version = "0.1.0"
+description = "ArcPy GUI toolkit for cropland quality workflows, spatial updates, area balancing, and audit reporting."
+requires-python = ">=3.9"
+dependencies = [
+  "openpyxl>=3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+]
+
+[project.scripts]
+cropland-quality-workflow-toolkit = "cropland_quality_update.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,0 +1,15 @@
+* text=auto eol=lf
+
+*.py text eol=lf
+*.md text eol=lf
+*.qmd text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+
+*.xlsx binary
+*.gdb/** binary
+*.shp binary
+*.shx binary
+*.dbf binary

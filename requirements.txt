@@ -1,0 +1,8 @@
+# Runtime note:
+# arcpy is required by all GUI processing tools and must come from ArcGIS Pro Python.
+# It cannot be installed from PyPI with pip.
+
+openpyxl>=3.0
+
+# Development / validation
+pytest>=7.0

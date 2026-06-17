@@ -1,0 +1,14 @@
+[project]
+name = "cropland_quality_workflow_toolkit"
+
+[paths]
+raw_data = "data/raw"
+interim_data = "data/interim"
+processed_data = "data/processed"
+outputs = "outputs"
+logs = "outputs/logs"
+
+[gis]
+target_spatial_reference = "CGCS2000_3_Degree_GK_Zone_37"
+cultivated_land_codes = ["0101", "0102", "0103"]
+small_polygon_area_ha = 0.04
