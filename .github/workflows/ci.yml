@@ -24,7 +24,7 @@ jobs:
 
       - name: Compile Python sources
         run: |
-          python -m compileall src run.py run_merge_shp_ui.py run_membership_ui.py run_update_scores_ui.py run_update_land_blocks_ui.py run_area_balance_ui.py
+          python -m compileall src run.py run_workflow_ui.py
 
       - name: Run tests
         env:

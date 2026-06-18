@@ -18,6 +18,7 @@ dev = [
 
 [project.scripts]
 cropland-quality-workflow-toolkit = "cropland_quality_update.cli:main"
+cropland-quality-workflow-ui = "cropland_quality_update.tools.workflow_arcpy_ui:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

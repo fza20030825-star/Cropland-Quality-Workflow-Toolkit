@@ -9,6 +9,7 @@ import shutil
 import threading
 import traceback
 import uuid
+from collections.abc import Callable
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,7 +18,6 @@ from tkinter import BOTH, END, LEFT, IntVar, StringVar, Text, Tk, Toplevel, file
 
 from cropland_quality_update.paths import resolve_paths
 from cropland_quality_update.tools import membership_arcpy_ui as membership_tool
-from cropland_quality_update.tools import merge_common_arcpy_ui as merge_tool
 from cropland_quality_update.tools import update_scores_arcpy_ui as score_tool
 
 
@@ -109,6 +109,16 @@ class TransferJob:
     created_at: str
 
 
+@dataclass(frozen=True)
+class SelectionTieWarning:
+    target_id: int
+    reason: str
+    candidate_ids: tuple[int, ...]
+    chosen_result_id: int
+    near_distance: float | None = None
+    source_area: float | None = None
+
+
 def now_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -184,8 +194,8 @@ def validate_polygon_source(source: VectorSource, label: str) -> int:
 
 def nearest_mode_text(mode: int) -> str:
     if mode == NEAREST_SAME_LAND_CLASS:
-        return "最近相同地类号的有值第三步结果"
-    return "最近的有值第三步结果（不限地类号）"
+        return "最近相同地类号的有值第二步结果"
+    return "最近的有值第二步结果（不限地类号）"
 
 
 def normalize_land_class_code(value: object) -> str:
@@ -215,9 +225,9 @@ def build_land_block_bindings(block_source: VectorSource) -> tuple[list[FieldBin
     bindings: list[FieldBinding] = []
     problems: list[FieldProblem] = []
     for output_name, source_name in LAND_BLOCK_FIELD_SPECS.items():
-        match, problem = choose_field_match(block_source, source_name, "最新地类图斑")
+        match, problem = choose_field_match(block_source, source_name, "最新三调图斑")
         if problem or match is None:
-            problems.append(FieldProblem(output_name, "最新地类图斑", f"缺少来源字段：{source_name}"))
+            problems.append(FieldProblem(output_name, "最新三调图斑", f"缺少来源字段：{source_name}"))
             continue
         bindings.append(FieldBinding(output_name, match.field_name, match.field_type, source_name))
     return bindings, problems
@@ -242,7 +252,7 @@ def filter_cropland_blocks(feature_class: str, land_class_field: str, logger: lo
             else:
                 cursor.deleteRow()
                 removed += 1
-    logger.info("最新地类图斑农田筛选完成：保留 %s 个，剔除 %s 个。", kept, removed)
+    logger.info("最新三调图斑农田筛选完成：保留 %s 个，剔除 %s 个。", kept, removed)
     return kept, removed
 
 
@@ -255,9 +265,9 @@ def build_result_bindings(result_source: VectorSource) -> tuple[list[FieldBindin
         if output_name in seen:
             continue
         seen.add(output_name)
-        match, problem = choose_field_match(result_source, output_name, "第三步结果")
+        match, problem = choose_field_match(result_source, output_name, "第二步结果")
         if problem or match is None:
-            problems.append(FieldProblem(output_name, "第三步结果", "缺少固定结果字段"))
+            problems.append(FieldProblem(output_name, "第二步结果", "缺少固定结果字段"))
             continue
         bindings.append(FieldBinding(output_name, match.field_name, match.field_type, output_name))
     return bindings, problems
@@ -274,19 +284,19 @@ def audit_third_result_schema(result_source: VectorSource) -> list[FieldProblem]
     try:
         score_tool.audit_output_schema(source_dataset_path(result_source))
     except Exception as exc:
-        return [FieldProblem("第三步结果字段结构", "第三步结果", str(exc))]
+        return [FieldProblem("第二步结果字段结构", "第二步结果", str(exc))]
     return []
 
 
 def build_preflight_text(report: TransferPreflightReport) -> str:
     lines: list[str] = []
-    lines.append("第四步更新前审查报告")
+    lines.append("第三步更新三调图斑前审查报告")
     lines.append("=" * 60)
-    lines.append(f"第三步结果：{source_label(report.result_source)}")
-    lines.append(f"最新地类图斑：{source_label(report.block_source)}")
+    lines.append(f"第二步结果：{source_label(report.result_source)}")
+    lines.append(f"最新三调图斑：{source_label(report.block_source)}")
     lines.append(f"最新行政区：{source_label(report.admin_source)}")
-    lines.append(f"第三步结果要素数：{report.result_feature_count}")
-    lines.append(f"最新地类图斑要素数：{report.block_feature_count}")
+    lines.append(f"第二步结果要素数：{report.result_feature_count}")
+    lines.append(f"最新三调图斑要素数：{report.block_feature_count}")
     lines.append(f"其中将参与处理的耕地图斑数（地类编码=0101/0102/0103）：{report.block_cropland_count}")
     lines.append(f"最新行政区要素数：{report.admin_feature_count}")
     lines.append("")
@@ -299,19 +309,19 @@ def build_preflight_text(report: TransferPreflightReport) -> str:
     lines.append(f"投影来源：{source_label(report.target_projection_source)}")
     lines.append("")
     lines.append("二、字段和赋值规则")
-    lines.append(f"最终输出字段数：{len(OUTPUT_FIELD_NAMES)}，字段名和顺序与第三步结果一致。")
-    lines.append("最新地类图斑直接带入字段：")
+    lines.append(f"最终输出字段数：{len(OUTPUT_FIELD_NAMES)}，字段名和顺序与第二步结果一致。")
+    lines.append("最新三调图斑直接带入字段：")
     for binding in report.block_bindings:
         lines.append(f"   - {binding.output_field} <= {binding.source_label} / {binding.source_field}({binding.source_type})")
-    lines.append("第三步结果字段：")
+    lines.append("第二步结果字段：")
     for binding in report.result_bindings:
         lines.append(f"   - {binding.output_field} <= {binding.source_field}({binding.source_type})")
     if report.admin_binding:
         lines.append(f"乡名称来源：最新行政区 {report.admin_binding.source_field}({report.admin_binding.source_type})，按最大叠置面积赋值。")
-    lines.append("县名称、县代码：读取第三步结果同名字段中出现次数最多的非空值，并赋给全部输出要素。")
-    lines.append("最新地类图斑：只保留地类编码为 0101、0102、0103 的耕地图斑，其余地类不进入输出。")
+    lines.append("县名称、县代码：读取第二步结果同名字段中出现次数最多的非空值，并赋给全部输出要素。")
+    lines.append("最新三调图斑：只保留地类编码为 0101、0102、0103 的耕地图斑，其余地类不进入输出。")
     lines.append("实体面积、实体长度：由输出几何重新计算，单位分别为公顷和 km；实体类型固定为“面”；平差面积留空。")
-    lines.append(f"耕评字段：先按第三步结果最大有值叠置面积赋值；无值区占优时，使用{nearest_mode_text(report.nearest_mode)}。")
+    lines.append(f"耕评字段：只要与第二步结果有任意有效重叠，就按最大重叠面积赋值；完全没有重叠时，使用{nearest_mode_text(report.nearest_mode)}。")
     lines.append("")
     lines.append("三、需要修正的问题")
     if report.problems:
@@ -339,8 +349,8 @@ def build_preflight_report(
     nearest_mode: int,
 ) -> TransferPreflightReport:
     require_runtime()
-    result_count = validate_polygon_source(result_source, "第三步结果")
-    block_count = validate_polygon_source(block_source, "最新地类图斑")
+    result_count = validate_polygon_source(result_source, "第二步结果")
+    block_count = validate_polygon_source(block_source, "最新三调图斑")
     admin_count = validate_polygon_source(admin_source, "最新行政区")
     projection_infos = [
         read_source_spatial_reference(result_source),
@@ -372,11 +382,11 @@ def build_preflight_report(
         try:
             block_cropland_count = count_cropland_features(block_source, binding_field(block_bindings, LAND_CLASS_FIELD))
         except Exception as exc:
-            problems.append(FieldProblem(LAND_CLASS_FIELD, "最新地类图斑", f"耕地图斑筛选统计失败：{exc}"))
+            problems.append(FieldProblem(LAND_CLASS_FIELD, "最新三调图斑", f"耕地图斑筛选统计失败：{exc}"))
     if not block_problems and block_cropland_count <= 0:
-        problems.append(FieldProblem(LAND_CLASS_FIELD, "最新地类图斑", "没有找到地类编码为 0101、0102 或 0103 的耕地图斑"))
+        problems.append(FieldProblem(LAND_CLASS_FIELD, "最新三调图斑", "没有找到地类编码为 0101、0102 或 0103 的耕地图斑"))
     if nearest_mode == NEAREST_SAME_LAND_CLASS:
-        warnings.append("选择“最近相同地类号”时，如果某个地类号在第三步结果中没有任何有值要素，对应输出要素会被打回。")
+        warnings.append("选择“最近相同地类号”时，如果某个地类号在第二步结果中没有任何有值要素，对应输出要素会被打回。")
 
     expected_result_fields = len({LAND_CLASS_FIELD, COUNTY_NAME_FIELD, COUNTY_CODE_FIELD, *EVALUATION_FIELD_NAMES})
     ok = (
@@ -478,7 +488,7 @@ def geometry_length_km(geometry) -> float | None:
 
 def create_land_block_output(job: TransferJob, temp_dir: Path, logger: logging.Logger) -> tuple[str, dict[str, str]]:
     if job.output_kind != "gdb":
-        raise RuntimeError("第四步需要保留完整中文字段名和固定字段顺序，请输出到 GDB 面要素类。")
+        raise RuntimeError("第三步需要保留完整中文字段名和固定字段顺序，请输出到 GDB 面要素类。")
     if not job.output_feature_name:
         raise RuntimeError("输出到 GDB 时必须指定面要素类名称。")
     delete_output_dataset(job.output_path, job.output_feature_name)
@@ -509,7 +519,7 @@ def create_land_block_output(job: TransferJob, temp_dir: Path, logger: logging.L
     land_class_source_field = score_tool.field_name_case_insensitive(block_analysis_fc, binding_field(job.block_bindings, LAND_CLASS_FIELD))
     kept_count, _removed_count = filter_cropland_blocks(block_analysis_fc, land_class_source_field, logger)
     if kept_count <= 0:
-        raise RuntimeError("最新地类图斑中没有地类编码为 0101、0102 或 0103 的耕地图斑，已中断。")
+        raise RuntimeError("最新三调图斑中没有地类编码为 0101、0102 或 0103 的耕地图斑，已中断。")
     block_fields = [binding.source_field for binding in job.block_bindings]
     insert_fields = [
         "SHAPE@",
@@ -540,7 +550,7 @@ def create_land_block_output(job: TransferJob, temp_dir: Path, logger: logging.L
                     ]
                 )
                 copied += 1
-    logger.info("输出初始图层创建完成：%s；写入最新耕地图斑要素数：%s", output_fc, copied)
+    logger.info("输出初始图层创建完成：%s；写入最新三调图斑要素数：%s", output_fc, copied)
     return output_fc, output_field_map
 
 
@@ -564,7 +574,7 @@ def most_common_nonblank_value(feature_class: str, field_name: str) -> tuple[obj
             values.setdefault(key, value)
             total_nonblank += 1
     if not counts:
-        raise RuntimeError(f"第三步结果字段 {field_name} 没有非空值，无法为输出统一赋值。")
+        raise RuntimeError(f"第二步结果字段 {field_name} 没有非空值，无法为输出统一赋值。")
     key, count = counts.most_common(1)[0]
     return values[key], count, total_nonblank
 
@@ -590,20 +600,52 @@ def build_single_field_value_map(feature_class: str, id_field: str, value_field:
     return values
 
 
+def distance_epsilon(distance: float) -> float:
+    return max(abs(distance) * 1e-9, 1e-8)
+
+
+def area_epsilon(area: float) -> float:
+    return max(abs(area) * 1e-9, 1e-8)
+
+
+def feature_id_set(feature_class: str, id_field: str) -> set[int]:
+    ids: set[int] = set()
+    with arcpy.da.SearchCursor(feature_class, [id_field]) as cursor:
+        for (row_id,) in cursor:
+            if row_id is not None:
+                ids.add(int(row_id))
+    return ids
+
+
+def choose_by_source_area(candidate_ids: list[int], source_area_map: dict[int, float]) -> tuple[int, float, list[int]]:
+    if not candidate_ids:
+        raise RuntimeError("候选来源为空，无法确定赋值来源。")
+    max_area = max(float(source_area_map.get(candidate_id, 0.0) or 0.0) for candidate_id in candidate_ids)
+    epsilon = area_epsilon(max_area)
+    tied = [
+        candidate_id
+        for candidate_id in candidate_ids
+        if abs(float(source_area_map.get(candidate_id, 0.0) or 0.0) - max_area) <= epsilon
+    ]
+    return sorted(tied)[0], max_area, sorted(tied)
+
+
 def decide_quality_sources(
     total_areas: dict[int, float],
     overlaps: dict[int, dict[int, float]],
     valid_result_ids: set[int],
-) -> tuple[dict[int, int], set[int], dict[str, int]]:
+    result_area_map: dict[int, float],
+) -> tuple[dict[int, int], set[int], dict[str, int], list[SelectionTieWarning]]:
     decisions: dict[int, int] = {}
     unresolved: set[int] = set()
+    warnings: list[SelectionTieWarning] = []
     stats = {
         "total": len(total_areas),
         "overlay_decisions": 0,
         "nearest_needed": 0,
         "no_valid_overlap": 0,
-        "no_data_dominates": 0,
-        "result_tie": 0,
+        "overlay_overlap_ties": 0,
+        "overlay_area_tie_warnings": 0,
         "zero_area": 0,
     }
     for target_id, total_area in total_areas.items():
@@ -621,22 +663,26 @@ def decide_quality_sources(
             unresolved.add(target_id)
             continue
         result_id, max_area = max(valid_overlaps.items(), key=lambda item: item[1])
-        valid_area = sum(max(0.0, area) for area in valid_overlaps.values())
-        no_data_area = max(0.0, total_area - valid_area)
-        epsilon = max(total_area * 1e-9, 1e-9)
-        if max_area <= no_data_area + epsilon:
-            stats["no_data_dominates"] += 1
-            unresolved.add(target_id)
-            continue
+        epsilon = max(max_area * 1e-9, 1e-9)
         tied_results = [candidate_id for candidate_id, area in valid_overlaps.items() if abs(area - max_area) <= epsilon]
         if len(tied_results) > 1:
-            stats["result_tie"] += 1
-            unresolved.add(target_id)
-            continue
+            stats["overlay_overlap_ties"] += 1
+            result_id, source_area, area_tied_results = choose_by_source_area(tied_results, result_area_map)
+            if len(area_tied_results) > 1:
+                stats["overlay_area_tie_warnings"] += 1
+                warnings.append(
+                    SelectionTieWarning(
+                        target_id=target_id,
+                        reason="最大重叠面积并列，且候选第二步结果面积也并列",
+                        candidate_ids=tuple(area_tied_results),
+                        chosen_result_id=result_id,
+                        source_area=source_area,
+                    )
+                )
         decisions[target_id] = result_id
         stats["overlay_decisions"] += 1
     stats["nearest_needed"] = len(unresolved)
-    return decisions, unresolved, stats
+    return decisions, unresolved, stats, warnings
 
 
 def create_id_subset(source_fc: str, id_field: str, keep_ids: set[int], temp_dir: Path, gdb_name: str, feature_name: str) -> str:
@@ -721,6 +767,178 @@ def generate_nearest_decisions(
     return decisions
 
 
+def generate_nearest_candidate_rows(
+    input_fc: str,
+    near_fc: str,
+    input_id_field: str,
+    near_id_field: str,
+    temp_dir: Path,
+    table_name: str,
+    logger: logging.Logger,
+    closest_count: int,
+) -> dict[int, list[tuple[float, int]]]:
+    in_count = int(arcpy.management.GetCount(input_fc)[0])
+    near_count = int(arcpy.management.GetCount(near_fc)[0])
+    if in_count <= 0 or near_count <= 0:
+        return {}
+    closest_count = max(1, min(int(closest_count), near_count))
+    in_oid = membership_tool.oid_field_name(input_fc)
+    near_oid = membership_tool.oid_field_name(near_fc)
+    input_oid_to_id = {
+        int(row[0]): int(row[1])
+        for row in arcpy.da.SearchCursor(input_fc, [in_oid, input_id_field])
+        if row[1] is not None
+    }
+    near_oid_to_id = {
+        int(row[0]): int(row[1])
+        for row in arcpy.da.SearchCursor(near_fc, [near_oid, near_id_field])
+        if row[1] is not None
+    }
+    gdb_path = score_tool.create_temp_gdb(temp_dir, table_name)
+    near_table = str(gdb_path / "near_table")
+    logger.info("开始最近距离候选匹配：输入 %s 个，候选 %s 个，每个输入最多保留 %s 个候选。", in_count, near_count, closest_count)
+    arcpy.analysis.GenerateNearTable(input_fc, near_fc, near_table, "", "NO_LOCATION", "NO_ANGLE", "CLOSEST", closest_count, "PLANAR")
+    rows_by_target: dict[int, dict[int, float]] = {}
+    with arcpy.da.SearchCursor(near_table, ["IN_FID", "NEAR_FID", "NEAR_DIST"]) as cursor:
+        for in_fid, near_fid, near_dist in cursor:
+            target_id = input_oid_to_id.get(int(in_fid))
+            result_id = near_oid_to_id.get(int(near_fid))
+            if target_id is None or result_id is None:
+                continue
+            distance = float(near_dist or 0.0)
+            by_result = rows_by_target.setdefault(target_id, {})
+            if result_id not in by_result or distance < by_result[result_id]:
+                by_result[result_id] = distance
+    return {
+        target_id: sorted(((distance, result_id) for result_id, distance in by_result.items()), key=lambda item: (item[0], item[1]))
+        for target_id, by_result in rows_by_target.items()
+    }
+
+
+def select_stable_nearest_decisions(
+    candidate_rows: dict[int, list[tuple[float, int]]],
+    target_ids: set[int],
+    result_area_map: dict[int, float],
+) -> tuple[dict[int, int], set[int], list[SelectionTieWarning], dict[str, int]]:
+    decisions: dict[int, int] = {}
+    unresolved: set[int] = set()
+    warnings: list[SelectionTieWarning] = []
+    stats = {
+        "nearest_checked": len(target_ids),
+        "nearest_distance_ties": 0,
+        "nearest_area_tie_warnings": 0,
+    }
+    for target_id in target_ids:
+        rows = candidate_rows.get(target_id, [])
+        if not rows:
+            unresolved.add(target_id)
+            continue
+        min_distance = rows[0][0]
+        epsilon = distance_epsilon(min_distance)
+        distance_tied_results = sorted({result_id for distance, result_id in rows if abs(distance - min_distance) <= epsilon})
+        if len(distance_tied_results) > 1:
+            stats["nearest_distance_ties"] += 1
+        result_id, source_area, area_tied_results = choose_by_source_area(distance_tied_results, result_area_map)
+        if len(area_tied_results) > 1:
+            stats["nearest_area_tie_warnings"] += 1
+            warnings.append(
+                SelectionTieWarning(
+                    target_id=target_id,
+                    reason="最近距离并列，且候选第二步结果面积也并列",
+                    candidate_ids=tuple(area_tied_results),
+                    chosen_result_id=result_id,
+                    near_distance=min_distance,
+                    source_area=source_area,
+                )
+            )
+        decisions[target_id] = result_id
+    return decisions, unresolved, warnings, stats
+
+
+def generate_stable_nearest_decisions(
+    input_fc: str,
+    near_fc: str,
+    input_id_field: str,
+    near_id_field: str,
+    result_area_map: dict[int, float],
+    temp_dir: Path,
+    table_name: str,
+    logger: logging.Logger,
+) -> tuple[dict[int, int], set[int], list[SelectionTieWarning], dict[str, int]]:
+    target_ids = feature_id_set(input_fc, input_id_field)
+    near_count = int(arcpy.management.GetCount(near_fc)[0])
+    if not target_ids or near_count <= 0:
+        return {}, set(target_ids), [], {
+            "nearest_checked": len(target_ids),
+            "nearest_distance_ties": 0,
+            "nearest_area_tie_warnings": 0,
+            "nearest_candidate_expansions": 0,
+        }
+    closest_count = min(8, near_count)
+    pending_fc = input_fc
+    pending_ids = set(target_ids)
+    final_rows: dict[int, list[tuple[float, int]]] = {}
+    expansions = 0
+    created_subsets: list[str] = []
+    try:
+        while pending_ids:
+            rows_by_target = generate_nearest_candidate_rows(
+                pending_fc,
+                near_fc,
+                input_id_field,
+                near_id_field,
+                temp_dir,
+                f"{table_name}_{closest_count}_{uuid.uuid4().hex[:6]}",
+                logger,
+                closest_count,
+            )
+            suspicious: set[int] = set()
+            for target_id in pending_ids:
+                rows = rows_by_target.get(target_id, [])
+                if not rows:
+                    final_rows[target_id] = rows
+                    continue
+                min_distance = rows[0][0]
+                if len(rows) >= closest_count and closest_count < near_count and abs(rows[-1][0] - min_distance) <= distance_epsilon(min_distance):
+                    suspicious.add(target_id)
+                else:
+                    final_rows[target_id] = rows
+            if not suspicious:
+                break
+            next_count = min(closest_count * 4, near_count)
+            if next_count == closest_count:
+                for target_id in suspicious:
+                    final_rows[target_id] = rows_by_target.get(target_id, [])
+                break
+            expansions += 1
+            logger.warning(
+                "发现 %s 个最近距离并列候选可能被截断，扩大最近候选数：%s -> %s。",
+                len(suspicious),
+                closest_count,
+                next_count,
+            )
+            closest_count = next_count
+            pending_ids = suspicious
+            pending_fc = create_id_subset(
+                input_fc,
+                input_id_field,
+                pending_ids,
+                temp_dir,
+                f"nearest_tie_targets_{uuid.uuid4().hex[:6]}",
+                "targets",
+            )
+            created_subsets.append(pending_fc)
+        decisions, unresolved, warnings, stats = select_stable_nearest_decisions(final_rows, target_ids, result_area_map)
+        stats["nearest_candidate_expansions"] = expansions
+        return decisions, unresolved, warnings, stats
+    finally:
+        for subset_fc in created_subsets:
+            try:
+                arcpy.management.Delete(subset_fc)
+            except Exception:
+                pass
+
+
 def generate_nearest_by_class_decisions(
     input_fc: str,
     near_fc: str,
@@ -728,9 +946,10 @@ def generate_nearest_by_class_decisions(
     near_id_field: str,
     input_class_field: str,
     near_class_field: str,
+    result_area_map: dict[int, float],
     temp_dir: Path,
     logger: logging.Logger,
-) -> tuple[dict[int, int], set[int]]:
+) -> tuple[dict[int, int], set[int], list[SelectionTieWarning], dict[str, int]]:
     class_to_target_ids: dict[str, set[int]] = {}
     class_original_value: dict[str, object] = {}
     with arcpy.da.SearchCursor(input_fc, [input_id_field, input_class_field]) as cursor:
@@ -742,6 +961,13 @@ def generate_nearest_by_class_decisions(
             class_original_value.setdefault(class_key, class_value)
     decisions: dict[int, int] = {}
     unresolved: set[int] = set()
+    warnings: list[SelectionTieWarning] = []
+    stats = {
+        "nearest_checked": 0,
+        "nearest_distance_ties": 0,
+        "nearest_area_tie_warnings": 0,
+        "nearest_candidate_expansions": 0,
+    }
     for class_key, target_ids in class_to_target_ids.items():
         class_value = class_original_value[class_key]
         target_where = sql_equals(input_fc, input_class_field, class_value)
@@ -751,23 +977,28 @@ def generate_nearest_by_class_decisions(
         try:
             if int(arcpy.management.GetCount(near_layer)[0]) <= 0:
                 unresolved.update(target_ids)
-                logger.warning("地类号 %s 在第三步有值结果中没有候选要素。", class_value)
+                stats["nearest_checked"] += len(target_ids)
+                logger.warning("地类号 %s 在第二步有值结果中没有候选要素。", class_value)
                 continue
-            partial = generate_nearest_decisions(
+            partial, partial_unresolved, partial_warnings, partial_stats = generate_stable_nearest_decisions(
                 target_layer,
                 near_layer,
                 input_id_field,
                 near_id_field,
+                result_area_map,
                 temp_dir,
                 f"near_same_class_{uuid.uuid4().hex[:6]}",
                 logger,
             )
             decisions.update(partial)
-            unresolved.update(target_ids - set(partial))
+            unresolved.update(partial_unresolved)
+            warnings.extend(partial_warnings)
+            for key, value in partial_stats.items():
+                stats[key] = stats.get(key, 0) + int(value)
         finally:
             arcpy.management.Delete(target_layer)
             arcpy.management.Delete(near_layer)
-    return decisions, unresolved
+    return decisions, unresolved, warnings, stats
 
 
 def nearest_quality_decisions(
@@ -782,13 +1013,21 @@ def nearest_quality_decisions(
     nearest_mode: int,
     temp_dir: Path,
     logger: logging.Logger,
-) -> tuple[dict[int, int], set[int]]:
+) -> tuple[dict[int, int], set[int], list[SelectionTieWarning], dict[str, int]]:
+    empty_stats = {
+        "nearest_checked": 0,
+        "nearest_distance_ties": 0,
+        "nearest_area_tie_warnings": 0,
+        "nearest_candidate_expansions": 0,
+    }
     if not unresolved_target_ids:
-        return {}, set()
+        return {}, set(), [], empty_stats
     target_subset = create_id_subset(target_analysis_fc, target_id_field, unresolved_target_ids, temp_dir, "nearest_targets", "nearest_targets")
     valid_result_subset = create_id_subset(result_analysis_fc, result_id_field, valid_result_ids, temp_dir, "valid_results", "valid_results")
+    result_area_map = score_tool.build_target_area_map(valid_result_subset, result_id_field)
     if int(arcpy.management.GetCount(valid_result_subset)[0]) <= 0:
-        return {}, set(unresolved_target_ids)
+        empty_stats["nearest_checked"] = len(unresolved_target_ids)
+        return {}, set(unresolved_target_ids), [], empty_stats
     if nearest_mode == NEAREST_SAME_LAND_CLASS:
         return generate_nearest_by_class_decisions(
             target_subset,
@@ -797,19 +1036,20 @@ def nearest_quality_decisions(
             result_id_field,
             target_class_field,
             result_class_field,
+            result_area_map,
             temp_dir,
             logger,
         )
-    decisions = generate_nearest_decisions(
+    return generate_stable_nearest_decisions(
         target_subset,
         valid_result_subset,
         target_id_field,
         result_id_field,
+        result_area_map,
         temp_dir,
         "nearest_quality",
         logger,
     )
-    return decisions, unresolved_target_ids - set(decisions)
 
 
 def decide_admin_sources(
@@ -904,6 +1144,52 @@ def build_missing_decision_report(output_fc: str, target_id_field: str, missing_
     return "\n".join(lines)
 
 
+def build_selection_tie_warning_report(output_fc: str, target_id_field: str, warnings: list[SelectionTieWarning], title: str) -> str:
+    sample_fields = [
+        field
+        for field in membership_tool.first_data_field_names(output_fc)
+        if field.upper() != target_id_field.upper()
+    ][: membership_tool.SAMPLE_FIELD_VALUE_LIMIT]
+    by_target: dict[int, list[SelectionTieWarning]] = {}
+    for warning in warnings:
+        by_target.setdefault(warning.target_id, []).append(warning)
+    lines = [title, "=" * 60, f"并列来源警告要素数：{len(by_target)}", f"并列来源记录数：{len(warnings)}"]
+    if by_target:
+        lines.append("")
+        lines.append("要素级样例：")
+    detail_limit = membership_tool.ISSUE_DETAIL_LIMIT
+    shown = 0
+    with arcpy.da.SearchCursor(output_fc, [target_id_field, *sample_fields]) as cursor:
+        for row in cursor:
+            target_id = int(row[0])
+            target_warnings = by_target.get(target_id)
+            if not target_warnings:
+                continue
+            if shown >= detail_limit:
+                break
+            sample_text = (
+                "；".join(f"{name}={membership_tool.field_value_text(value)}" for name, value in zip(sample_fields, row[1:]))
+                or "无可展示字段值"
+            )
+            warning_texts = []
+            for warning in target_warnings:
+                parts = [
+                    warning.reason,
+                    f"候选第二步结果ID={','.join(str(candidate_id) for candidate_id in warning.candidate_ids)}",
+                    f"实际采用ID={warning.chosen_result_id}",
+                ]
+                if warning.near_distance is not None:
+                    parts.append(f"最近距离={warning.near_distance:.12g}")
+                if warning.source_area is not None:
+                    parts.append(f"候选面积={warning.source_area:.12g}")
+                warning_texts.append("；".join(parts))
+            lines.append(f"   - OID={target_id}；{sample_text}；{' | '.join(warning_texts)}")
+            shown += 1
+    if len(by_target) > detail_limit:
+        lines.append(f"问题要素过多（{len(by_target)} 个），只输出前 {detail_limit} 个样例。")
+    return "\n".join(lines)
+
+
 def calculate_transfer(job: TransferJob, temp_dir: Path, logger: logging.Logger) -> tuple[str, dict[str, int]]:
     require_runtime()
     arcpy.env.overwriteOutput = True
@@ -917,8 +1203,8 @@ def calculate_transfer(job: TransferJob, temp_dir: Path, logger: logging.Logger)
             job.result_source,
             job.target_spatial_reference,
             temp_dir,
-            "third_result_analysis",
-            "third_result_analysis",
+            "second_result_analysis",
+            "second_result_analysis",
             logger,
         )
         result_id_field = score_tool.add_oid_copy_field(result_analysis_fc, "CQ_RESULT_OID")
@@ -951,6 +1237,7 @@ def calculate_transfer(job: TransferJob, temp_dir: Path, logger: logging.Logger)
         quality_result_fields = [result_field_map[field] for field in EVALUATION_FIELD_NAMES]
         result_values = score_tool.build_result_value_map(result_analysis_fc, result_id_field, quality_result_fields)
         valid_result_ids = build_valid_result_ids(result_analysis_fc, result_id_field, quality_result_fields)
+        result_area_map = score_tool.build_target_area_map(result_analysis_fc, result_id_field)
         result_class_field = result_field_map[LAND_CLASS_FIELD]
         target_class_field = score_tool.field_name_case_insensitive(target_analysis_fc, output_field_map[LAND_CLASS_FIELD])
 
@@ -962,8 +1249,13 @@ def calculate_transfer(job: TransferJob, temp_dir: Path, logger: logging.Logger)
             temp_dir,
             logger,
         )
-        quality_decisions, nearest_needed, quality_stats = decide_quality_sources(total_areas, quality_overlaps, valid_result_ids)
-        nearest_decisions, still_missing_quality = nearest_quality_decisions(
+        quality_decisions, nearest_needed, quality_stats, overlay_tie_warnings = decide_quality_sources(
+            total_areas,
+            quality_overlaps,
+            valid_result_ids,
+            result_area_map,
+        )
+        nearest_decisions, still_missing_quality, nearest_tie_warnings, nearest_stats = nearest_quality_decisions(
             target_analysis_fc,
             result_analysis_fc,
             target_id_field,
@@ -977,10 +1269,14 @@ def calculate_transfer(job: TransferJob, temp_dir: Path, logger: logging.Logger)
             logger,
         )
         quality_decisions.update(nearest_decisions)
+        tie_warnings = overlay_tie_warnings + nearest_tie_warnings
+        if tie_warnings:
+            report_text = build_selection_tie_warning_report(output_fc, output_id_field, tie_warnings, "耕评字段并列来源警告")
+            logger.warning(report_text)
         if still_missing_quality:
             report_text = build_missing_decision_report(output_fc, output_id_field, still_missing_quality, "耕评字段最近补值失败报告")
             logger.error(report_text)
-            raise RuntimeError(f"有 {len(still_missing_quality)} 个要素没有找到可用第三步结果。详情见日志。")
+            raise RuntimeError(f"有 {len(still_missing_quality)} 个要素没有找到可用第二步结果。详情见日志。")
 
         quality_updated = update_quality_fields(output_fc, output_id_field, EVALUATION_FIELD_NAMES, quality_decisions, result_values, logger)
         output_bindings = [
@@ -993,7 +1289,7 @@ def calculate_transfer(job: TransferJob, temp_dir: Path, logger: logging.Logger)
             output_bindings,
             quality_decisions,
             result_values,
-            "第四步耕评字段更新后一致性审计",
+            "第三步耕评字段更新后一致性审计",
         )
         logger.info("耕评字段一致性审计：\n%s", audit_text)
         if not ok:
@@ -1033,15 +1329,18 @@ def calculate_transfer(job: TransferJob, temp_dir: Path, logger: logging.Logger)
         blank_ok, blank_text, blank_stats = score_tool.build_blank_result_report(
             output_fc,
             EVALUATION_FIELD_NAMES,
-            "第四步耕评字段空值审计",
+            "第三步耕评字段空值审计",
         )
         logger.info("耕评字段空值审计：\n%s", blank_text)
         if not blank_ok:
-            raise RuntimeError(f"第四步输出耕评字段仍有空值：{blank_stats['missing_values']} 个。详情见日志。")
+            raise RuntimeError(f"第三步输出耕评字段仍有空值：{blank_stats['missing_values']} 个。详情见日志。")
 
         stats = {
             **quality_stats,
+            **nearest_stats,
             "nearest_decisions": len(nearest_decisions),
+            "source_tie_warning_records": len(tie_warnings),
+            "source_tie_warning_features": len({warning.target_id for warning in tie_warnings}),
             "quality_updated": quality_updated,
             "township_updated": township_updated,
             "admin_nearest_fallback": admin_nearest_count,
@@ -1049,7 +1348,7 @@ def calculate_transfer(job: TransferJob, temp_dir: Path, logger: logging.Logger)
             "audit_issue_values": audit_stats["issue_values"],
             "blank_missing_values": blank_stats["missing_values"],
         }
-        logger.info("第四步更新统计：%s", stats)
+        logger.info("第三步更新统计：%s", stats)
     finally:
         try:
             arcpy.management.DeleteField(output_fc, output_id_field)
@@ -1134,13 +1433,13 @@ class TransferWorker(threading.Thread):
             "error": None,
             "stats": None,
         }
-        self.send("job_started", {"job_id": job.job_id, "message": "开始更新最新耕地图斑", "log_path": str(log_path)})
+        self.send("job_started", {"job_id": job.job_id, "message": "开始更新三调图斑", "log_path": str(log_path)})
         try:
             require_runtime()
             temp_dir.mkdir(parents=True, exist_ok=True)
             logger.info("任务开始：%s", job.job_id)
-            logger.info("第三步结果：%s", source_path_for_log(job.result_source))
-            logger.info("最新地类图斑：%s", source_path_for_log(job.block_source))
+            logger.info("第二步结果：%s", source_path_for_log(job.result_source))
+            logger.info("最新三调图斑：%s", source_path_for_log(job.block_source))
             logger.info("最新行政区：%s", source_path_for_log(job.admin_source))
             logger.info("输出目标：%s", output_target)
             logger.info("统一投影：%s", describe_spatial_reference(job.target_spatial_reference))
@@ -1149,11 +1448,15 @@ class TransferWorker(threading.Thread):
                 logger.info("提交前审查报告：\n%s", job.validation_report)
             output_fc, stats = calculate_transfer(job, temp_dir, logger)
             record.update({"status": "success", "stats": stats})
+            warning_suffix = ""
+            if int(stats.get("source_tie_warning_features", 0) or 0) > 0:
+                warning_suffix = f"；并列来源警告 {stats.get('source_tie_warning_features')} 个，见日志"
             self.send(
                 "job_done",
                 {
                     "job_id": job.job_id,
-                    "message": f"更新完成：{output_fc}；耕评字段更新要素 {stats.get('quality_updated', 0)} 个",
+                    "message": f"更新完成：{output_fc}；耕评字段更新要素 {stats.get('quality_updated', 0)} 个{warning_suffix}",
+                    "output_path": output_fc,
                     "log_path": str(log_path),
                 },
             )
@@ -1178,8 +1481,18 @@ class TransferWorker(threading.Thread):
 
 
 class LandBlockUpdateApp:
-    def __init__(self, root: Tk):
+    def __init__(
+        self,
+        root: Tk,
+        *,
+        embedded: bool = False,
+        shared_status_text: Text | None = None,
+        on_job_done: Callable[[dict], None] | None = None,
+    ):
         self.root = root
+        self.embedded = embedded
+        self.shared_status_text = shared_status_text
+        self.on_job_done = on_job_done
         self.paths = resolve_paths(Path.cwd())
         self.logs_dir = self.paths.outputs_dir / "logs"
         self.process_dir = self.paths.outputs_dir / "process_files"
@@ -1208,7 +1521,7 @@ class LandBlockUpdateApp:
         self.nearest_mode_var = IntVar(value=NEAREST_ALL)
 
         self.output_gdb_var = StringVar()
-        self.output_feature_var = StringVar(value="最新耕地图斑_质量评价")
+        self.output_feature_var = StringVar(value="Step3_更新三调图斑")
 
         self.last_report: TransferPreflightReport | None = None
         self.last_report_key: tuple | None = None
@@ -1218,8 +1531,10 @@ class LandBlockUpdateApp:
         self.worker = TransferWorker(self.job_queue, self.event_queue, self.logs_dir, self.process_dir)
         self.worker.start()
 
-        self.root.title("第四步：最新耕地图斑质量评价更新工具（ArcPy）")
-        self.root.geometry("1180x860")
+        if not self.embedded:
+            self.root.title("第三步：更新三调图斑（ArcPy）")
+            self.root.geometry("1180x860")
+            self.root.minsize(1180, 780)
         self.build_ui()
         self.root.after(200, self.poll_worker_events)
 
@@ -1229,42 +1544,58 @@ class LandBlockUpdateApp:
 
         input_frame = ttk.LabelFrame(container, text="1. 输入数据")
         input_frame.pack(fill="x", pady=5)
-        self.build_source_rows(input_frame, "第三步结果", self.result_path_var, self.result_layer_var, "result")
-        self.build_source_rows(input_frame, "最新地类图斑", self.block_path_var, self.block_layer_var, "block")
+        self.build_source_rows(input_frame, "第二步结果", self.result_path_var, self.result_layer_var, "result")
+        self.build_source_rows(input_frame, "最新三调图斑", self.block_path_var, self.block_layer_var, "block")
         self.build_source_rows(input_frame, "最新行政区", self.admin_path_var, self.admin_layer_var, "admin")
 
         projection_frame = ttk.LabelFrame(container, text="2. 坐标系统一")
         projection_frame.pack(fill="x", pady=5)
         projection_row = ttk.Frame(projection_frame)
         projection_row.pack(fill="x", padx=5, pady=4)
-        ttk.Radiobutton(projection_row, text="使用第三步结果投影", variable=self.reference_mode, value=0, command=self.update_target_projection).pack(side=LEFT)
-        ttk.Radiobutton(projection_row, text="使用最新地类图斑投影", variable=self.reference_mode, value=1, command=self.update_target_projection).pack(side=LEFT, padx=8)
+        ttk.Radiobutton(projection_row, text="使用第二步结果投影", variable=self.reference_mode, value=0, command=self.update_target_projection).pack(side=LEFT)
+        ttk.Radiobutton(projection_row, text="使用最新三调图斑投影", variable=self.reference_mode, value=1, command=self.update_target_projection).pack(side=LEFT, padx=8)
         ttk.Radiobutton(projection_row, text="使用最新行政区投影", variable=self.reference_mode, value=2, command=self.update_target_projection).pack(side=LEFT, padx=8)
         ttk.Radiobutton(projection_row, text="使用外部 shp 投影", variable=self.reference_mode, value=3, command=self.update_target_projection).pack(side=LEFT, padx=8)
         ttk.Button(projection_row, text="选择外部 shp", command=self.choose_extra_reference).pack(side=LEFT, padx=5)
         ttk.Entry(projection_row, textvariable=self.reference_extra_var).pack(side=LEFT, fill="x", expand=True, padx=5)
 
-        self.projection_tree = ttk.Treeview(projection_frame, columns=("source", "projection"), show="headings", height=4)
+        projection_table = ttk.Frame(projection_frame)
+        projection_table.pack(fill="x", padx=5, pady=4)
+        self.projection_tree = ttk.Treeview(projection_table, columns=("source", "projection"), show="headings", height=4)
         self.projection_tree.heading("source", text="数据源")
         self.projection_tree.heading("projection", text="投影")
-        self.projection_tree.column("source", width=420, anchor="w")
-        self.projection_tree.column("projection", width=680, anchor="w")
-        self.projection_tree.pack(fill="x", padx=5, pady=4)
+        self.projection_tree.column("source", width=1300, anchor="w", stretch=False)
+        self.projection_tree.column("projection", width=800, anchor="w", stretch=False)
+        projection_y = ttk.Scrollbar(projection_table, orient="vertical", command=self.projection_tree.yview)
+        projection_x = ttk.Scrollbar(projection_table, orient="horizontal", command=self.projection_tree.xview)
+        self.projection_tree.configure(yscrollcommand=projection_y.set, xscrollcommand=projection_x.set)
+        self.projection_tree.grid(row=0, column=0, sticky="nsew")
+        projection_y.grid(row=0, column=1, sticky="ns")
+        projection_x.grid(row=1, column=0, sticky="ew")
+        projection_table.columnconfigure(0, weight=1)
 
-        self.projection_text = Text(projection_frame, height=4, wrap="word")
-        self.projection_text.pack(fill="x", padx=5, pady=4)
+        projection_text_frame = ttk.Frame(projection_frame)
+        projection_text_frame.pack(fill="x", padx=5, pady=4)
+        self.projection_text = Text(projection_text_frame, height=4, wrap="none")
+        projection_text_y = ttk.Scrollbar(projection_text_frame, orient="vertical", command=self.projection_text.yview)
+        projection_text_x = ttk.Scrollbar(projection_text_frame, orient="horizontal", command=self.projection_text.xview)
+        self.projection_text.configure(yscrollcommand=projection_text_y.set, xscrollcommand=projection_text_x.set)
+        self.projection_text.grid(row=0, column=0, sticky="nsew")
+        projection_text_y.grid(row=0, column=1, sticky="ns")
+        projection_text_x.grid(row=1, column=0, sticky="ew")
+        projection_text_frame.columnconfigure(0, weight=1)
         self.projection_text.insert(END, "选择输入数据后，这里会显示统一投影。")
 
-        rule_frame = ttk.LabelFrame(container, text="3. 无值区补值方式")
+        rule_frame = ttk.LabelFrame(container, text="3. 无重叠补值方式")
         rule_frame.pack(fill="x", pady=5)
-        ttk.Radiobutton(rule_frame, text="找最近的有值第三步结果", variable=self.nearest_mode_var, value=NEAREST_ALL).pack(side=LEFT, padx=8, pady=5)
-        ttk.Radiobutton(rule_frame, text="找最近相同地类号的有值第三步结果", variable=self.nearest_mode_var, value=NEAREST_SAME_LAND_CLASS).pack(side=LEFT, padx=8, pady=5)
+        ttk.Radiobutton(rule_frame, text="找最近的有值第二步结果", variable=self.nearest_mode_var, value=NEAREST_ALL).pack(side=LEFT, padx=8, pady=5)
+        ttk.Radiobutton(rule_frame, text="找最近相同地类号的有值第二步结果", variable=self.nearest_mode_var, value=NEAREST_SAME_LAND_CLASS).pack(side=LEFT, padx=8, pady=5)
 
         output_frame = ttk.LabelFrame(container, text="4. 输出位置")
         output_frame.pack(fill="x", pady=5)
         kind_row = ttk.Frame(output_frame)
         kind_row.pack(fill="x", padx=5, pady=2)
-        ttk.Label(kind_row, text="第四步固定输出为 GDB 面要素类，以保留完整中文字段名和字段顺序。").pack(side=LEFT)
+        ttk.Label(kind_row, text="第三步固定输出为 GDB 面要素类，以保留完整中文字段名和字段顺序。").pack(side=LEFT)
         gdb_row = ttk.Frame(output_frame)
         gdb_row.pack(fill="x", padx=5, pady=2)
         ttk.Label(gdb_row, text="GDB").pack(side=LEFT)
@@ -1283,9 +1614,13 @@ class LandBlockUpdateApp:
         ttk.Button(action_row, text="查看历史记录", command=self.show_history).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="打开日志文件夹", command=self.open_logs_folder).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="删除日志", command=self.delete_logs).pack(side=LEFT, padx=5, pady=4)
-        self.status_text = Text(report_frame, height=22, wrap="word")
-        self.status_text.pack(fill="both", expand=True, padx=5, pady=5)
-        self.log_status("工具已启动。请先选择第三步结果、最新地类图斑和最新行政区。")
+        if self.shared_status_text is None:
+            self.status_text = Text(report_frame, height=22, wrap="word")
+            self.status_text.pack(fill="both", expand=True, padx=5, pady=5)
+        else:
+            self.status_text = self.shared_status_text
+            ttk.Label(report_frame, text="运行详细信息显示在窗口底部“详细信息”区域。").pack(anchor="w", padx=5, pady=5)
+        self.log_status("第三步工具已启动。请先选择第二步结果、最新三调图斑和最新行政区。")
 
     def build_source_rows(self, parent, label: str, path_var: StringVar, layer_var: StringVar, role: str) -> None:
         row = ttk.Frame(parent)
@@ -1315,14 +1650,14 @@ class LandBlockUpdateApp:
             self.result_layer_var.set(source.layer_name or "")
             self.result_gdb_sources = []
             self.result_layer_combo["values"] = []
-            self.log_status(f"已选择第三步结果：{source_label(source)}")
+            self.log_status(f"已选择第二步结果：{source_label(source)}")
         elif role == "block":
             self.block_source = source
             self.block_path_var.set(str(source.source_path))
             self.block_layer_var.set(source.layer_name or "")
             self.block_gdb_sources = []
             self.block_layer_combo["values"] = []
-            self.log_status(f"已选择最新地类图斑：{source_label(source)}")
+            self.log_status(f"已选择最新三调图斑：{source_label(source)}")
         else:
             self.admin_source = source
             self.admin_path_var.set(str(source.source_path))
@@ -1481,10 +1816,10 @@ class LandBlockUpdateApp:
 
     def validate_current_inputs(self) -> None:
         if self.result_source is None:
-            messagebox.showwarning("提示", "请先选择第三步结果。")
+            messagebox.showwarning("提示", "请先选择第二步结果。")
             return
         if self.block_source is None:
-            messagebox.showwarning("提示", "请先选择最新地类图斑。")
+            messagebox.showwarning("提示", "请先选择最新三调图斑。")
             return
         if self.admin_source is None:
             messagebox.showwarning("提示", "请先选择最新行政区。")
@@ -1513,7 +1848,7 @@ class LandBlockUpdateApp:
 
     def show_report(self, report: TransferPreflightReport, ask_continue: bool) -> bool:
         window = Toplevel(self.root)
-        window.title("第四步更新前审查报告")
+        window.title("第三步更新三调图斑前审查报告")
         window.geometry("1040x720")
         text = Text(window, wrap="word")
         text.pack(fill=BOTH, expand=True, padx=8, pady=8)
@@ -1549,7 +1884,10 @@ class LandBlockUpdateApp:
             messagebox.showwarning("提示", "请选择 GDB 并填写面要素类名。")
             return None
         output_path = Path(gdb_text if gdb_text.lower().endswith(".gdb") else f"{gdb_text}.gdb")
-        output_feature_name = arcpy.ValidateTableName(feature_name, str(output_path.parent))
+        output_feature_name = membership_tool.validate_gdb_feature_name(feature_name, output_path)
+        if output_feature_name != feature_name:
+            self.output_feature_var.set(output_feature_name)
+            self.log_status(f"输出要素类名已按 FileGDB 规则修正为：{output_feature_name}")
         return "gdb", output_path, output_feature_name
 
     def submit_job(self) -> None:
@@ -1561,7 +1899,7 @@ class LandBlockUpdateApp:
             return
         output_kind, output_path, output_feature_name = output
         output_dataset = output_dataset_path(output_kind, output_path, output_feature_name)
-        for label, source in (("第三步结果", self.result_source), ("最新地类图斑", self.block_source), ("最新行政区", self.admin_source)):
+        for label, source in (("第二步结果", self.result_source), ("最新三调图斑", self.block_source), ("最新行政区", self.admin_source)):
             input_dataset = Path(source_dataset_path(source)).resolve()
             if output_dataset.resolve() == input_dataset:
                 messagebox.showerror("输出错误", f"输出结果不能覆盖{label}输入数据，请换一个输出名称。")
@@ -1611,6 +1949,8 @@ class LandBlockUpdateApp:
             while True:
                 event_type, payload = self.event_queue.get_nowait()
                 self.log_status(f"[{payload.get('job_id')}] {payload.get('message')}")
+                if event_type == "job_done" and self.on_job_done:
+                    self.on_job_done(payload)
                 if event_type in {"job_done", "job_failed"} and payload.get("log_path"):
                     self.log_status(f"日志：{payload['log_path']}")
         except queue.Empty:
@@ -1627,7 +1967,7 @@ class LandBlockUpdateApp:
             messagebox.showinfo("历史记录", "暂无历史记录。")
             return
         window = Toplevel(self.root)
-        window.title("第四步更新历史记录")
+        window.title("第三步更新三调图斑历史记录")
         window.geometry("1000x640")
         text = Text(window, wrap="word")
         text.pack(fill=BOTH, expand=True, padx=8, pady=8)
@@ -1642,8 +1982,8 @@ class LandBlockUpdateApp:
             text.insert(
                 END,
                 f"任务 {record.get('job_id')} | {record.get('status')} | {record.get('created_at')}\n"
-                f"第三步结果：{record.get('result_source')}\n"
-                f"最新地类图斑：{record.get('block_source')}\n"
+                f"第二步结果：{record.get('result_source')}\n"
+                f"最新三调图斑：{record.get('block_source')}\n"
                 f"最新行政区：{record.get('admin_source')}\n"
                 f"输出：{record.get('output_path')}\n"
                 f"补值模式：{record.get('nearest_mode')}\n"
@@ -1663,7 +2003,7 @@ class LandBlockUpdateApp:
             messagebox.showerror("打开失败", str(exc))
 
     def delete_logs(self) -> None:
-        if not messagebox.askyesno("确认删除", "确定删除第四步更新日志和历史记录吗？"):
+        if not messagebox.askyesno("确认删除", "确定删除第三步更新三调图斑日志和历史记录吗？"):
             return
         deleted = 0
         for path in self.logs_dir.glob("update_land_blocks_*.log"):
@@ -1673,7 +2013,37 @@ class LandBlockUpdateApp:
         if history_path.exists():
             history_path.unlink()
             deleted += 1
-        self.log_status(f"已删除 {deleted} 个第四步日志/历史文件。")
+        self.log_status(f"已删除 {deleted} 个第三步日志/历史文件。")
+
+    def reset_inputs(self) -> None:
+        for path_var, layer_var, source_attr, sources_attr, combo_name in (
+            (self.result_path_var, self.result_layer_var, "result_source", "result_gdb_sources", "result_layer_combo"),
+            (self.block_path_var, self.block_layer_var, "block_source", "block_gdb_sources", "block_layer_combo"),
+            (self.admin_path_var, self.admin_layer_var, "admin_source", "admin_gdb_sources", "admin_layer_combo"),
+        ):
+            path_var.set("")
+            layer_var.set("")
+            setattr(self, source_attr, None)
+            setattr(self, sources_attr, [])
+            combo = getattr(self, combo_name, None)
+            if combo is not None:
+                combo["values"] = []
+        self.reference_mode.set(1)
+        self.reference_extra_var.set("")
+        self.target_spatial_reference = None
+        self.target_projection_source = None
+        self.nearest_mode_var.set(NEAREST_ALL)
+        self.output_gdb_var.set("")
+        self.output_feature_var.set("Step3_更新三调图斑")
+        self.last_report = None
+        self.last_report_key = None
+        if hasattr(self, "projection_tree"):
+            for item in self.projection_tree.get_children():
+                self.projection_tree.delete(item)
+        if hasattr(self, "projection_text"):
+            self.projection_text.delete("1.0", END)
+            self.projection_text.insert(END, "选择输入数据后，这里会显示统一投影。")
+        self.log_status("第三步输入和参数已恢复为启动默认值。")
 
 
 def main() -> int:

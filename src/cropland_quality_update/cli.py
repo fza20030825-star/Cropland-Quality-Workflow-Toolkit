@@ -55,12 +55,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print_environment_report()
     print("")
-    print("GUI workflow entry points:")
-    print("  1. python run_merge_shp_ui.py")
-    print("  2. python run_membership_ui.py")
-    print("  3. python run_update_scores_ui.py")
-    print("  4. python run_update_land_blocks_ui.py")
-    print("  5. python run_area_balance_ui.py")
+    print("GUI workflow entry point:")
+    print("  python run_workflow_ui.py")
     print("")
     print("Read README.md for quick use and docs/workflow_manual.qmd for detailed audit rules.")
     return 0

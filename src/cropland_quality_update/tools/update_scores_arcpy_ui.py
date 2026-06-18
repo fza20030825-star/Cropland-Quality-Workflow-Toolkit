@@ -9,6 +9,7 @@ import shutil
 import threading
 import traceback
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -16,7 +17,7 @@ from tkinter import BOTH, END, LEFT, IntVar, StringVar, Text, Tk, Toplevel, file
 
 from cropland_quality_update.paths import resolve_paths
 from cropland_quality_update.tools import membership_arcpy_ui as membership_tool
-from cropland_quality_update.tools import merge_common_arcpy_ui as merge_tool
+from cropland_quality_update.tools import vector_common_arcpy as vector_tool
 
 
 arcpy = membership_tool.arcpy
@@ -211,19 +212,19 @@ def is_data_field(field) -> bool:
 
 
 def read_source_spatial_reference(source: VectorSource):
-    return merge_tool.read_source_spatial_reference(source)
+    return vector_tool.read_source_spatial_reference(source)
 
 
 def spatial_reference_equal(a: object | None, b: object | None) -> bool:
-    return merge_tool.spatial_reference_equal(a, b)
+    return vector_tool.spatial_reference_equal(a, b)
 
 
 def describe_spatial_reference(sr: object | None) -> str:
-    return merge_tool.describe_spatial_reference(sr)
+    return vector_tool.describe_spatial_reference(sr)
 
 
 def projection_text(sr: object | None) -> str:
-    return merge_tool.projection_text(sr)
+    return vector_tool.projection_text(sr)
 
 
 def make_vector_source(kind: str, source_path: Path, layer_name: str | None = None) -> VectorSource:
@@ -353,12 +354,12 @@ def build_field_bindings(
 
     for canonical_name in canonical_update_field_names():
         target_match, target_problem = choose_field_match(target_source, canonical_name, "现有农田面")
-        result_match, result_problem = choose_field_match(result_source, canonical_name, "第二步结果")
+        result_match, result_problem = choose_field_match(result_source, canonical_name, "第一步结果")
         if target_problem:
-            warnings.append(f"{canonical_name}：现有农田面未匹配到旧字段，将在输出中创建全称字段并由第二步结果更新。")
+            warnings.append(f"{canonical_name}：现有农田面未匹配到旧字段，将在输出中创建全称字段并由第一步结果更新。")
         if result_problem:
             if canonical_name in OPTIONAL_RESULT_FIELD_NAMES:
-                warnings.append(f"{canonical_name}：第二步结果未匹配到字段，输出将留空。")
+                warnings.append(f"{canonical_name}：第一步结果未匹配到字段，输出将留空。")
             else:
                 problems.append(result_problem)
         if result_match is None:
@@ -370,7 +371,7 @@ def build_field_bindings(
             allowed_types = NUMERIC_FIELD_TYPES
         if result_match.field_type not in allowed_types:
             problems.append(
-                FieldMatchProblem(canonical_name, "第二步结果", f"字段 {result_match.field_name} 类型不符合要求，实际为 {result_match.field_type}")
+                FieldMatchProblem(canonical_name, "第一步结果", f"字段 {result_match.field_name} 类型不符合要求，实际为 {result_match.field_type}")
             )
             continue
 
@@ -379,7 +380,7 @@ def build_field_bindings(
 
         previous = seen_result_fields.get(result_match.field_name)
         if previous and previous != canonical_name:
-            problems.append(FieldMatchProblem(canonical_name, "第二步结果", f"字段 {result_match.field_name} 已匹配给 {previous}"))
+            problems.append(FieldMatchProblem(canonical_name, "第一步结果", f"字段 {result_match.field_name} 已匹配给 {previous}"))
             continue
         seen_result_fields[result_match.field_name] = canonical_name
 
@@ -397,12 +398,12 @@ def build_field_bindings(
 
 def build_preflight_text(report: UpdatePreflightReport) -> str:
     lines: list[str] = []
-    lines.append("得分更新前审查报告")
+    lines.append("第二步更新隶属度前审查报告")
     lines.append("=" * 60)
     lines.append(f"现有农田面：{source_label(report.target_source)}")
-    lines.append(f"第二步结果：{source_label(report.result_source)}")
+    lines.append(f"第一步结果：{source_label(report.result_source)}")
     lines.append(f"现有农田面要素数：{report.target_feature_count}")
-    lines.append(f"第二步结果要素数：{report.result_feature_count}")
+    lines.append(f"第一步结果要素数：{report.result_feature_count}")
     lines.append("")
     lines.append("一、坐标系检查")
     lines.append(f"两个输入投影是否一致：{'是' if report.projections_same else '否'}")
@@ -415,7 +416,7 @@ def build_preflight_text(report: UpdatePreflightReport) -> str:
     lines.append("二、字段匹配")
     expected_count = len(canonical_update_field_names())
     lines.append(f"最终输出字段数：{len(OUTPUT_FIELD_NAMES)}")
-    lines.append(f"应从第二步结果更新字段数：{expected_count}")
+    lines.append(f"应从第一步结果更新字段数：{expected_count}")
     lines.append(f"现有农田面可带入基础字段数：{len(report.source_bindings)}")
     lines.append(f"成功匹配字段数：{len(report.field_bindings)}")
     if report.source_bindings:
@@ -426,7 +427,7 @@ def build_preflight_text(report: UpdatePreflightReport) -> str:
         lines.append("更新字段来源：")
         for binding in report.field_bindings:
             lines.append(
-                f"   - {binding.canonical_name}: 输出全称字段 <= 第二步结果 {binding.result_field}({binding.result_type})"
+                f"   - {binding.canonical_name}: 输出全称字段 <= 第一步结果 {binding.result_field}({binding.result_type})"
             )
     if report.problems:
         lines.append("")
@@ -445,9 +446,9 @@ def build_preflight_text(report: UpdatePreflightReport) -> str:
         lines.append("   无。")
     lines.append("")
     lines.append("五、更新规则")
-    lines.append("   对每个现有农田面，按第二步结果的重叠面积分组。")
-    lines.append("   若未覆盖面积大于或等于任一第二步结果的重叠面积，则不更新。")
-    lines.append("   否则使用重叠面积最大的第二步结果，更新各指标、F 隶属度、评价得分和质量等级。")
+    lines.append("   对每个现有农田面，按第一步结果的重叠面积分组。")
+    lines.append("   若未覆盖面积大于或等于任一第一步结果的重叠面积，则不更新。")
+    lines.append("   否则使用重叠面积最大的第一步结果，更新各指标、F 隶属度、评价得分和质量等级。")
     lines.append("   输出只保留固定提交字段清单，字段名使用全称并按清单顺序保存。")
     lines.append("")
     lines.append("审查通过，可以继续提交更新任务。" if report.ok else "审查未通过，请先修正字段或数据后重新审查。")
@@ -462,7 +463,7 @@ def build_preflight_report(
 ) -> UpdatePreflightReport:
     require_runtime()
     target_count = validate_polygon_source(target_source, "现有农田面")
-    result_count = validate_polygon_source(result_source, "第二步结果")
+    result_count = validate_polygon_source(result_source, "第一步结果")
     projection_infos = [read_source_spatial_reference(target_source), read_source_spatial_reference(result_source)]
     projections_same = not any(info.spatial_reference is None for info in projection_infos) and spatial_reference_equal(
         projection_infos[0].spatial_reference,
@@ -623,7 +624,7 @@ def build_update_match_report(
                 missing_result_rows += 1
                 issue_features += 1
                 if issue_features <= detail_limit:
-                    issue_lines.append(f"   - OID={target_id}；找不到第二步结果 ID={result_id} 的值")
+                    issue_lines.append(f"   - OID={target_id}；找不到第一步结果 ID={result_id} 的值")
                 continue
 
             field_issues: list[str] = []
@@ -644,7 +645,7 @@ def build_update_match_report(
                     "；".join(f"{name}={membership_tool.field_value_text(value)}" for name, value in zip(sample_fields, sample_values))
                     or "无可展示字段值"
                 )
-                issue_lines.append(f"   - OID={target_id}；第二步结果 ID={result_id}；{sample_text}")
+                issue_lines.append(f"   - OID={target_id}；第一步结果 ID={result_id}；{sample_text}")
                 for item in field_issues:
                     issue_lines.append(f"     * {item}")
 
@@ -660,7 +661,7 @@ def build_update_match_report(
     if issue_total:
         lines.append("一、字段问题统计")
         if missing_result_rows:
-            lines.append(f"   - 找不到第二步结果值：{missing_result_rows} 个要素")
+            lines.append(f"   - 找不到第一步结果值：{missing_result_rows} 个要素")
         for field, count in issue_by_field.items():
             if count:
                 lines.append(f"   - {field}：{count} 个要素输出值不一致或为空")
@@ -670,7 +671,7 @@ def build_update_match_report(
             lines.append(f"问题要素过多（{issue_features} 个），只输出前 {detail_limit} 个样例。")
         lines.extend(issue_lines)
     else:
-        lines.append("所有应更新要素的结果字段均与第二步结果一致。")
+        lines.append("所有应更新要素的结果字段均与第一步结果一致。")
     stats = {
         "checked_features": checked,
         "issue_features": issue_features,
@@ -748,7 +749,7 @@ def create_target_output(job: UpdateJob, temp_dir: Path, logger: logging.Logger)
     delete_output_dataset(job.output_path, job.output_feature_name)
     source_dataset = source_dataset_path(job.target_source)
     if job.output_kind != "gdb":
-        raise RuntimeError("第三步需要保留完整中文字段名和固定字段顺序，请输出到 GDB 面要素类。")
+        raise RuntimeError("第二步需要保留完整中文字段名和固定字段顺序，请输出到 GDB 面要素类。")
     job.output_path.parent.mkdir(parents=True, exist_ok=True)
     if not job.output_path.exists():
         arcpy.management.CreateFileGDB(str(job.output_path.parent), job.output_path.name)
@@ -854,12 +855,12 @@ def prepare_result_for_analysis(job: UpdateJob, temp_dir: Path, logger: logging.
     out_fc = str(gdb_path / "result_analysis")
     info = read_source_spatial_reference(job.result_source)
     if info.spatial_reference is None:
-        raise RuntimeError(f"第二步结果缺少可识别投影：{source_label(job.result_source)}")
+        raise RuntimeError(f"第一步结果缺少可识别投影：{source_label(job.result_source)}")
     if spatial_reference_equal(info.spatial_reference, job.target_spatial_reference):
-        logger.info("第二步结果投影一致，复制到临时分析图层。")
+        logger.info("第一步结果投影一致，复制到临时分析图层。")
         arcpy.conversion.ExportFeatures(source_dataset, out_fc)
     else:
-        logger.info("第二步结果重投影到临时分析图层。")
+        logger.info("第一步结果重投影到临时分析图层。")
         arcpy.management.Project(source_dataset, out_fc, job.target_spatial_reference)
     return out_fc
 
@@ -903,7 +904,7 @@ def intersect_overlap_areas(
 ) -> dict[int, dict[int, float]]:
     gdb_path = create_temp_gdb(temp_dir, "overlap_intersect")
     intersect_fc = str(gdb_path / "overlap_intersect")
-    logger.info("开始计算现有农田面与第二步结果的重叠面积。")
+    logger.info("开始计算现有农田面与第一步结果的重叠面积。")
     arcpy.analysis.PairwiseIntersect([target_analysis_fc, result_analysis_fc], intersect_fc, "ALL")
     count = int(arcpy.management.GetCount(intersect_fc)[0])
     logger.info("重叠分析结果要素数：%s", count)
@@ -1000,7 +1001,7 @@ def update_output_fields(
                 continue
             values = result_values.get(result_id)
             if values is None:
-                logger.warning("找不到第二步结果值，跳过现有农田 OID=%s，结果 ID=%s", target_id, result_id)
+                logger.warning("找不到第一步结果值，跳过现有农田 OID=%s，结果 ID=%s", target_id, result_id)
                 continue
             converted = [
                 coerce_value_for_field(value, fields_by_name[binding.target_field])
@@ -1053,7 +1054,7 @@ def calculate_update(job: UpdateJob, temp_dir: Path, logger: logging.Logger) -> 
             output_bindings,
             decisions,
             result_values,
-            "得分字段更新后结果一致性审计",
+            "第二步隶属度更新后结果一致性审计",
         )
         logger.info("结果完整性审计：\n%s", audit_text)
         stats["audit_checked_features"] = audit_stats["checked_features"]
@@ -1145,13 +1146,13 @@ class UpdateWorker(threading.Thread):
             "error": None,
             "stats": None,
         }
-        self.send("job_started", {"job_id": job.job_id, "message": "开始更新得分字段", "log_path": str(log_path)})
+        self.send("job_started", {"job_id": job.job_id, "message": "开始更新隶属度字段", "log_path": str(log_path)})
         try:
             require_runtime()
             temp_dir.mkdir(parents=True, exist_ok=True)
             logger.info("任务开始：%s", job.job_id)
             logger.info("现有农田面：%s", source_path_for_log(job.target_source))
-            logger.info("第二步结果：%s", source_path_for_log(job.result_source))
+            logger.info("第一步结果：%s", source_path_for_log(job.result_source))
             logger.info("输出目标：%s", output_target)
             logger.info("统一投影：%s", describe_spatial_reference(job.target_spatial_reference))
             logger.info("字段绑定数量：%s", len(job.field_bindings))
@@ -1164,6 +1165,7 @@ class UpdateWorker(threading.Thread):
                 {
                     "job_id": job.job_id,
                     "message": f"更新完成：{output_fc}；更新要素 {stats.get('updated', 0)} 个",
+                    "output_path": output_fc,
                     "log_path": str(log_path),
                 },
             )
@@ -1188,8 +1190,18 @@ class UpdateWorker(threading.Thread):
 
 
 class ScoreUpdateApp:
-    def __init__(self, root: Tk):
+    def __init__(
+        self,
+        root: Tk,
+        *,
+        embedded: bool = False,
+        shared_status_text: Text | None = None,
+        on_job_done: Callable[[dict], None] | None = None,
+    ):
         self.root = root
+        self.embedded = embedded
+        self.shared_status_text = shared_status_text
+        self.on_job_done = on_job_done
         self.paths = resolve_paths(Path.cwd())
         self.logs_dir = self.paths.outputs_dir / "logs"
         self.process_dir = self.paths.outputs_dir / "process_files"
@@ -1212,7 +1224,7 @@ class ScoreUpdateApp:
         self.target_projection_source: VectorSource | None = None
 
         self.output_gdb_var = StringVar()
-        self.output_feature_var = StringVar(value="农田面_得分更新")
+        self.output_feature_var = StringVar(value="Step2_更新隶属度")
 
         self.last_report: UpdatePreflightReport | None = None
         self.last_report_key: tuple | None = None
@@ -1222,8 +1234,10 @@ class ScoreUpdateApp:
         self.worker = UpdateWorker(self.job_queue, self.event_queue, self.logs_dir, self.process_dir)
         self.worker.start()
 
-        self.root.title("农田面得分字段更新工具（ArcPy）")
-        self.root.geometry("1160x820")
+        if not self.embedded:
+            self.root.title("第二步：更新隶属度（ArcPy）")
+            self.root.geometry("1160x820")
+            self.root.minsize(1160, 760)
         self.build_ui()
         self.root.after(200, self.poll_worker_events)
 
@@ -1235,34 +1249,50 @@ class ScoreUpdateApp:
         input_frame.pack(fill="x", pady=5)
 
         self.build_source_rows(input_frame, "现有农田面", self.target_path_var, self.target_layer_var, True)
-        self.build_source_rows(input_frame, "第二步结果", self.result_path_var, self.result_layer_var, False)
+        self.build_source_rows(input_frame, "第一步结果", self.result_path_var, self.result_layer_var, False)
 
         projection_frame = ttk.LabelFrame(container, text="2. 坐标系统一")
         projection_frame.pack(fill="x", pady=5)
         projection_row = ttk.Frame(projection_frame)
         projection_row.pack(fill="x", padx=5, pady=4)
         ttk.Radiobutton(projection_row, text="使用现有农田面投影", variable=self.reference_mode, value=0, command=self.update_target_projection).pack(side=LEFT)
-        ttk.Radiobutton(projection_row, text="使用第二步结果投影", variable=self.reference_mode, value=1, command=self.update_target_projection).pack(side=LEFT, padx=8)
+        ttk.Radiobutton(projection_row, text="使用第一步结果投影", variable=self.reference_mode, value=1, command=self.update_target_projection).pack(side=LEFT, padx=8)
         ttk.Radiobutton(projection_row, text="使用外部 shp 投影", variable=self.reference_mode, value=2, command=self.update_target_projection).pack(side=LEFT, padx=8)
         ttk.Button(projection_row, text="选择外部 shp", command=self.choose_extra_reference).pack(side=LEFT, padx=5)
         ttk.Entry(projection_row, textvariable=self.reference_extra_var).pack(side=LEFT, fill="x", expand=True, padx=5)
 
-        self.projection_tree = ttk.Treeview(projection_frame, columns=("source", "projection"), show="headings", height=3)
+        projection_table = ttk.Frame(projection_frame)
+        projection_table.pack(fill="x", padx=5, pady=4)
+        self.projection_tree = ttk.Treeview(projection_table, columns=("source", "projection"), show="headings", height=3)
         self.projection_tree.heading("source", text="数据源")
         self.projection_tree.heading("projection", text="投影")
-        self.projection_tree.column("source", width=420, anchor="w")
-        self.projection_tree.column("projection", width=650, anchor="w")
-        self.projection_tree.pack(fill="x", padx=5, pady=4)
+        self.projection_tree.column("source", width=1300, anchor="w", stretch=False)
+        self.projection_tree.column("projection", width=800, anchor="w", stretch=False)
+        projection_y = ttk.Scrollbar(projection_table, orient="vertical", command=self.projection_tree.yview)
+        projection_x = ttk.Scrollbar(projection_table, orient="horizontal", command=self.projection_tree.xview)
+        self.projection_tree.configure(yscrollcommand=projection_y.set, xscrollcommand=projection_x.set)
+        self.projection_tree.grid(row=0, column=0, sticky="nsew")
+        projection_y.grid(row=0, column=1, sticky="ns")
+        projection_x.grid(row=1, column=0, sticky="ew")
+        projection_table.columnconfigure(0, weight=1)
 
-        self.projection_text = Text(projection_frame, height=4, wrap="word")
-        self.projection_text.pack(fill="x", padx=5, pady=4)
+        projection_text_frame = ttk.Frame(projection_frame)
+        projection_text_frame.pack(fill="x", padx=5, pady=4)
+        self.projection_text = Text(projection_text_frame, height=4, wrap="none")
+        projection_text_y = ttk.Scrollbar(projection_text_frame, orient="vertical", command=self.projection_text.yview)
+        projection_text_x = ttk.Scrollbar(projection_text_frame, orient="horizontal", command=self.projection_text.xview)
+        self.projection_text.configure(yscrollcommand=projection_text_y.set, xscrollcommand=projection_text_x.set)
+        self.projection_text.grid(row=0, column=0, sticky="nsew")
+        projection_text_y.grid(row=0, column=1, sticky="ns")
+        projection_text_x.grid(row=1, column=0, sticky="ew")
+        projection_text_frame.columnconfigure(0, weight=1)
         self.projection_text.insert(END, "选择输入数据后，这里会显示统一投影。")
 
         output_frame = ttk.LabelFrame(container, text="3. 输出位置")
         output_frame.pack(fill="x", pady=5)
         kind_row = ttk.Frame(output_frame)
         kind_row.pack(fill="x", padx=5, pady=2)
-        ttk.Label(kind_row, text="第三步固定输出为 GDB 面要素类，以保留完整中文字段名和字段顺序。").pack(side=LEFT)
+        ttk.Label(kind_row, text="第二步固定输出为 GDB 面要素类，以保留完整中文字段名和字段顺序。").pack(side=LEFT)
 
         gdb_row = ttk.Frame(output_frame)
         gdb_row.pack(fill="x", padx=5, pady=2)
@@ -1282,9 +1312,13 @@ class ScoreUpdateApp:
         ttk.Button(action_row, text="查看历史记录", command=self.show_history).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="打开日志文件夹", command=self.open_logs_folder).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="删除日志", command=self.delete_logs).pack(side=LEFT, padx=5, pady=4)
-        self.status_text = Text(report_frame, height=22, wrap="word")
-        self.status_text.pack(fill="both", expand=True, padx=5, pady=5)
-        self.log_status("工具已启动。请先选择现有农田面和第二步结果。")
+        if self.shared_status_text is None:
+            self.status_text = Text(report_frame, height=22, wrap="word")
+            self.status_text.pack(fill="both", expand=True, padx=5, pady=5)
+        else:
+            self.status_text = self.shared_status_text
+            ttk.Label(report_frame, text="运行详细信息显示在窗口底部“详细信息”区域。").pack(anchor="w", padx=5, pady=5)
+        self.log_status("第二步工具已启动。请先选择现有农田面和第一步结果。")
 
     def build_source_rows(self, parent, label: str, path_var: StringVar, layer_var: StringVar, is_target: bool) -> None:
         row = ttk.Frame(parent)
@@ -1329,7 +1363,7 @@ class ScoreUpdateApp:
             self.result_layer_var.set("")
             self.result_gdb_sources = []
             self.result_layer_combo["values"] = []
-            self.log_status(f"已选择第二步结果 Shapefile：{source_label(source)}")
+            self.log_status(f"已选择第一步结果 Shapefile：{source_label(source)}")
         self.last_report = None
         self.update_target_projection()
 
@@ -1368,7 +1402,7 @@ class ScoreUpdateApp:
             self.result_layer_combo["values"] = [source.layer_name for source in sources]
             self.result_layer_var.set(str(sources[0].layer_name))
             self.result_source = sources[0]
-            self.log_status(f"已选择第二步结果 GDB：{gdb_path}，面图层数量 {len(sources)}。")
+            self.log_status(f"已选择第一步结果 GDB：{gdb_path}，面图层数量 {len(sources)}。")
         self.last_report = None
         self.update_target_projection()
 
@@ -1388,7 +1422,7 @@ class ScoreUpdateApp:
             if source.layer_name == layer_name:
                 self.result_source = source
                 self.last_report = None
-                self.log_status(f"已选择第二步结果 GDB 面图层：{source_label(source)}")
+                self.log_status(f"已选择第一步结果 GDB 面图层：{source_label(source)}")
                 self.update_target_projection()
                 return
 
@@ -1473,7 +1507,7 @@ class ScoreUpdateApp:
             messagebox.showwarning("提示", "请先选择现有农田面。")
             return
         if self.result_source is None:
-            messagebox.showwarning("提示", "请先选择第二步结果。")
+            messagebox.showwarning("提示", "请先选择第一步结果。")
             return
         self.update_target_projection()
         if self.target_projection_source is None or self.target_spatial_reference is None:
@@ -1497,7 +1531,7 @@ class ScoreUpdateApp:
 
     def show_report(self, report: UpdatePreflightReport, ask_continue: bool) -> bool:
         window = Toplevel(self.root)
-        window.title("得分更新前审查报告")
+        window.title("第二步更新隶属度前审查报告")
         window.geometry("1020x700")
         text = Text(window, wrap="word")
         text.pack(fill=BOTH, expand=True, padx=8, pady=8)
@@ -1534,19 +1568,22 @@ class ScoreUpdateApp:
             messagebox.showwarning("提示", "请选择 GDB 并填写面要素类名。")
             return None
         output_path = Path(gdb_text if gdb_text.lower().endswith(".gdb") else f"{gdb_text}.gdb")
-        output_feature_name = arcpy.ValidateTableName(feature_name, str(output_path.parent))
+        output_feature_name = membership_tool.validate_gdb_feature_name(feature_name, output_path)
+        if output_feature_name != feature_name:
+            self.output_feature_var.set(output_feature_name)
+            self.log_status(f"输出要素类名已按 FileGDB 规则修正为：{output_feature_name}")
         return output_kind, output_path, output_feature_name
 
     def submit_job(self) -> None:
         if self.target_source is None or self.result_source is None:
-            messagebox.showwarning("提示", "请先选择现有农田面和第二步结果。")
+            messagebox.showwarning("提示", "请先选择现有农田面和第一步结果。")
             return
         output = self.output_settings()
         if output is None:
             return
         output_kind, output_path, output_feature_name = output
         output_dataset = output_dataset_path(output_kind, output_path, output_feature_name)
-        for label, source in (("现有农田面", self.target_source), ("第二步结果", self.result_source)):
+        for label, source in (("现有农田面", self.target_source), ("第一步结果", self.result_source)):
             input_dataset = Path(source_dataset_path(source)).resolve()
             if output_dataset.resolve() == input_dataset:
                 messagebox.showerror("输出错误", f"输出结果不能覆盖{label}输入数据，请换一个输出名称。")
@@ -1593,6 +1630,8 @@ class ScoreUpdateApp:
             while True:
                 event_type, payload = self.event_queue.get_nowait()
                 self.log_status(f"[{payload.get('job_id')}] {payload.get('message')}")
+                if event_type == "job_done" and self.on_job_done:
+                    self.on_job_done(payload)
                 if event_type in {"job_done", "job_failed"} and payload.get("log_path"):
                     self.log_status(f"日志：{payload['log_path']}")
         except queue.Empty:
@@ -1609,7 +1648,7 @@ class ScoreUpdateApp:
             messagebox.showinfo("历史记录", "暂无历史记录。")
             return
         window = Toplevel(self.root)
-        window.title("得分更新历史记录")
+        window.title("第二步更新隶属度历史记录")
         window.geometry("980x620")
         text = Text(window, wrap="word")
         text.pack(fill=BOTH, expand=True, padx=8, pady=8)
@@ -1625,7 +1664,7 @@ class ScoreUpdateApp:
                 END,
                 f"任务 {record.get('job_id')} | {record.get('status')} | {record.get('created_at')}\n"
                 f"现有农田：{record.get('target_source')}\n"
-                f"第二步结果：{record.get('result_source')}\n"
+                f"第一步结果：{record.get('result_source')}\n"
                 f"输出：{record.get('output_path')}\n"
                 f"统计：{record.get('stats')}\n"
                 f"日志：{record.get('log_path')}\n"
@@ -1643,7 +1682,7 @@ class ScoreUpdateApp:
             messagebox.showerror("打开失败", str(exc))
 
     def delete_logs(self) -> None:
-        if not messagebox.askyesno("确认删除", "确定删除得分更新日志和历史记录吗？"):
+        if not messagebox.askyesno("确认删除", "确定删除第二步更新隶属度日志和历史记录吗？"):
             return
         deleted = 0
         for path in self.logs_dir.glob("update_scores_*.log"):
@@ -1653,7 +1692,36 @@ class ScoreUpdateApp:
         if history_path.exists():
             history_path.unlink()
             deleted += 1
-        self.log_status(f"已删除 {deleted} 个得分更新日志/历史文件。")
+        self.log_status(f"已删除 {deleted} 个第二步更新隶属度日志/历史文件。")
+
+    def reset_inputs(self) -> None:
+        self.target_path_var.set("")
+        self.target_layer_var.set("")
+        self.target_source = None
+        self.target_gdb_sources = []
+        self.result_path_var.set("")
+        self.result_layer_var.set("")
+        self.result_source = None
+        self.result_gdb_sources = []
+        self.reference_mode.set(0)
+        self.reference_extra_var.set("")
+        self.target_spatial_reference = None
+        self.target_projection_source = None
+        self.output_gdb_var.set("")
+        self.output_feature_var.set("Step2_更新隶属度")
+        self.last_report = None
+        self.last_report_key = None
+        for combo_name in ("target_layer_combo", "result_layer_combo"):
+            combo = getattr(self, combo_name, None)
+            if combo is not None:
+                combo["values"] = []
+        if hasattr(self, "projection_tree"):
+            for item in self.projection_tree.get_children():
+                self.projection_tree.delete(item)
+        if hasattr(self, "projection_text"):
+            self.projection_text.delete("1.0", END)
+            self.projection_text.insert(END, "选择输入数据后，这里会显示统一投影。")
+        self.log_status("第二步输入和参数已恢复为启动默认值。")
 
 
 def main() -> int:

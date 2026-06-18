@@ -1,119 +1,76 @@
 # Cropland Quality Workflow Toolkit
 
-Cropland Quality Workflow Toolkit 是一个面向 ArcGIS Pro Python 环境的耕地质量评价流程工具集，用 Tkinter 图形界面封装了 5 个连续处理步骤。工具重点解决高标准农田项目区、第二步评价结果、现有农田面、最新地类图斑、最新行政区数据和官方面积统计数据之间的字段匹配、坐标系统一、空间叠置赋值、面积平差、完整性审计和可追溯日志问题。
+Cropland Quality Workflow Toolkit 是一个面向 ArcGIS Pro Python 环境的耕地质量评价流程工具集。项目把高标准农田隶属度计算、现有农田面更新、三调耕地图斑更新和面积平差串联为 4 个正式流程，并提供统一 Tkinter 图形界面。
 
-## 运行环境
+## 环境要求
 
-请使用 ArcGIS Pro 的 Python 环境或其克隆环境运行，例如：
-
-```text
-C:\Program Files\ArcGIS\Pro\bin\Python\envs\arcgispro-py3
-```
-
-如果你已经克隆到 Conda 环境，也可以使用自己的克隆环境路径。
-
-必须具备：
-
-- `arcpy`：由 ArcGIS Pro Python 提供，不能通过普通 `pip` 安装。
-- `tkinter`：通常随 Python 自带，用于图形界面。
-- `openpyxl`：第二步读取规则 Excel 时使用。
-
-可选检查：
+- Windows + ArcGIS Pro Python 环境。
+- `arcpy`：由 ArcGIS Pro 提供。
+- `openpyxl`：读取国标二级农业区规则 Excel。
+- 强烈建议在项目根目录运行脚本。
 
 ```powershell
-python run.py --check-env
+python -m pip install -r requirements.txt
+python -m cropland_quality_update --check-env
 ```
 
-## 快速开始
-
-在 VS Code 或 PowerShell 中进入项目根目录：
+## 推荐入口
 
 ```powershell
-cd "path\to\cropland-quality-workflow-toolkit"
-$env:PYTHONPATH="src"
+python run_workflow_ui.py
 ```
 
-说明：对外项目名和仓库名使用 `Cropland Quality Workflow Toolkit` / `cropland-quality-workflow-toolkit`；内部 Python 包名暂时保留 `cropland_quality_update`，用于保持现有入口脚本和导入路径稳定。
+统一界面顶部可切换 4 个流程。顶部“统一输出 GDB”选择一次后，会同步到四个步骤的输出 GDB；在任意步骤内部改输出 GDB，也会同步回全部步骤。前一步成功输出后，会自动把结果路径填入下一步对应输入框；其他业务输入仍由用户选择或填写。底部“详细信息”区域集中显示审查提示、任务状态、日志路径和自动衔接信息。“恢复默认输入”只恢复各步骤输入与参数，不清空详细信息。
 
-按顺序运行 5 个入口：
+## 四个正式流程
 
-```powershell
-python run_merge_shp_ui.py
-python run_membership_ui.py
-python run_update_scores_ui.py
-python run_update_land_blocks_ui.py
-python run_area_balance_ui.py
-```
-
-## 五个工具做什么
-
-| 步骤 | 入口文件 | 主要作用 |
+| 流程 | 统一 UI 调用的后端模块 | 功能 |
 | --- | --- | --- |
-| 1 | `run_merge_shp_ui.py` | 合并多个高标准农田项目区面矢量，检查坐标、字段和空间重叠，输出新图层。 |
-| 2 | `run_membership_ui.py` | 按国标二级区规则表计算各指标隶属度、评价得分和质量等级。 |
-| 3 | `run_update_scores_ui.py` | 将第二步结果更新到现有农田面输出副本中，输出固定 39 个字段。 |
-| 4 | `run_update_land_blocks_ui.py` | 将第三步结果更新到最新耕地图斑中，只处理 `地类编码=0101/0102/0103` 的农田，输出固定 39 个字段。 |
-| 5 | `run_area_balance_ui.py` | 按 2024 年湖北省耕地面积统计数据对 `平差面积` 做分地类平差，新增 `等级*面积`，并在界面和日志输出县域加权平均质量等级。 |
+| 全流程 | `workflow_arcpy_ui.py` | 唯一正式图形入口，由 `run_workflow_ui.py` 启动。 |
+| 1 | `membership_arcpy_ui.py` | 计算高标隶属度：从多源高标准农田面数据中整合 13 个评价指标，按国标二级农业区规则计算 13 个隶属度、评价得分和质量等级。 |
+| 2 | `update_scores_arcpy_ui.py` | 更新隶属度：把第一步结果按空间叠置规则更新到现有农田面副本，输出固定 39 字段。 |
+| 3 | `update_land_blocks_arcpy_ui.py` | 更新三调图斑：筛选最新三调图斑中 `地类编码=0101/0102/0103` 的耕地，按第二步结果赋值并输出固定 39 字段。 |
+| 4 | `area_balance_arcpy_ui.py` | 面积平差：按 2024 年湖北省耕地面积统计数据计算平差系数、平差面积、等级面积和县域加权平均质量等级。 |
 
-输入文件不会被原地修改。所有工具都会生成单独输出结果；如果输出路径等于输入数据本身，工具会拒绝执行。
+根目录不再保留单步 UI 启动脚本；代码层面保留统一 UI 和各步骤后端算法/嵌入页面模块。
 
 ## 强烈建议使用 GDB
 
-强烈建议用户把过程结果和最终结果都保存为 FileGDB 面要素类，而不是 Shapefile。Shapefile/DBF 对中文字段名、字段长度、字段类型和编码都有明显限制，容易造成字段截断、重名、乱码或数值精度损失。第三步、第四步和第五步已经强制使用 GDB；第一步和第二步即使界面允许输出 Shapefile，也建议仅在临时交换或额外兼容导出时使用，正式流程请优先保存到 GDB。
+强烈建议所有过程结果和最终结果都保存为 FileGDB 面要素类，不要把 Shapefile 作为正式过程数据。Shapefile/DBF 对中文字段名、字段长度、字段类型和编码都有明显限制，容易造成字段截断、重名、乱码或数值精度损失。当前正式流程优先或强制使用 GDB，以保证完整中文字段名、固定字段顺序和审计规则可靠。
 
-## 规则表
+程序允许把结果保存到输入数据所在的同一个 GDB 中，但要素类名称必须不同。所有流程都会检查输出结果不能覆盖任何输入数据。
 
-第二步规则 Excel 放在：
+## 第一步重叠处理
 
-```text
-data/rules
-```
+第一步会先检查不同来源的高标准农田要素。如果几何多边形和 13 个输入评价指标完全相同，后出现的跨来源重复要素会自动去重。
 
-当前包含 5 个国标二级区规则表。运行第二步时，工具会按用户选择的国标二级区读取对应规则文件。
+如果不同来源要素存在非完全相同的空间重叠，UI 提供两种模式：
 
-## 输出和日志
+- `标记重叠并输出明细（推荐先用）`：输出额外字段 `是否重叠`，用 `1/0` 标记是否存在非完全相同跨来源重叠；详细日志列出涉及的文件、OID 和重叠面积。
+- `按输入顺序 Erase，前面的数据源优先保留`：后续数据源写入前会被前序已保留区域 Erase，最终输出消除跨来源重叠。
 
-默认输出目录：
+建议先用标记模式检查重叠是否少且可接受；确认后如需消除重叠，再选择按输入顺序 Erase 重新运行。
 
-```text
-outputs
-```
+## 规则文件
 
-日志目录：
+国标二级农业区规则 Excel 放在：
 
 ```text
-outputs/logs
+data/rules/
 ```
 
-运行过程文件目录：
+文件名格式为：
 
 ```text
-outputs/process_files
+{国标二级农业区}_机器读取规则.xlsx
 ```
 
-日志和过程文件是本地运行产物，已经在 `.gitignore` 中忽略。每个工具在任务结束后会尽量清理过程文件；即使任务失败，也会记录失败原因和审计报告。
+第一步会按用户选择的国标二级农业区读取规则表。若选择区域不是 `秦岭大巴山林农区` 或 `渝鄂湘黔边境山地林农牧区`，允许输入数据缺少 `海拔高度` 字段；其他 12 个指标必须完整匹配。
 
-## 详细流程说明
+## 详细文档
 
-专业核查和交付前复核请看：
+完整操作流程、字段清单、判断标准、错误返回、重叠处理和审计规则见：
 
 ```text
 docs/workflow_manual.qmd
 ```
-
-这个文件详细说明了每个步骤的入口、输入、输出、字段规则、坐标规则、更新判断标准、失败/打回条件、日志内容和质量审计机制。
-
-## 测试
-
-普通 Python 环境不能真正运行 ArcPy 空间处理，但可以做基础导入和路径安全测试。建议在 ArcGIS Pro Python 环境中执行：
-
-```powershell
-$env:PYTHONPATH="src"
-python -m pytest
-```
-
-## GitHub 上传前注意
-
-- 不提交本地 `.env`、日志、过程文件、GDB、Shapefile 和缓存。
-- 不提交真实涉密或大体量生产数据；示例数据如需发布，应脱敏后单独说明。
-- `data/rules` 中的规则 Excel 是工具运行所需的固定规则资源，默认保留在仓库中。

@@ -9,6 +9,7 @@ import threading
 import traceback
 import uuid
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -184,10 +185,10 @@ def numeric_value(value: object) -> float | None:
 def validate_polygon_source(source: VectorSource) -> int:
     dataset = source_dataset_path(source)
     if not arcpy.Exists(dataset):
-        raise RuntimeError(f"第四步结果不存在：{dataset}")
+        raise RuntimeError(f"第三步结果不存在：{dataset}")
     desc = arcpy.Describe(dataset)
     if getattr(desc, "shapeType", "") != "Polygon":
-        raise RuntimeError("第四步结果必须是面矢量。")
+        raise RuntimeError("第三步结果必须是面矢量。")
     return int(arcpy.management.GetCount(dataset)[0])
 
 
@@ -195,9 +196,9 @@ def bind_required_fields(source: VectorSource) -> tuple[dict[str, FieldBinding],
     bindings: dict[str, FieldBinding] = {}
     problems: list[FieldProblem] = []
     for name in (LAND_CLASS_FIELD, ENTITY_AREA_FIELD, BALANCED_AREA_FIELD, GRADE_FIELD, COUNTY_NAME_FIELD):
-        match, problem = score_tool.choose_field_match(source, name, "第四步结果")
+        match, problem = score_tool.choose_field_match(source, name, "第三步结果")
         if problem or match is None:
-            problems.append(FieldProblem(name, "第四步结果", "缺少必须字段"))
+            problems.append(FieldProblem(name, "第三步结果", "缺少必须字段"))
             continue
         bindings[name] = FieldBinding(name, match.field_name, match.field_type)
     return bindings, problems
@@ -210,7 +211,7 @@ def mode_nonblank(values: list[object], field_name: str) -> tuple[str, FieldProb
             continue
         counts[str(value).strip()] += 1
     if not counts:
-        return "", FieldProblem(field_name, "第四步结果", "没有非空值，无法生成加权等级名称")
+        return "", FieldProblem(field_name, "第三步结果", "没有非空值，无法生成加权等级名称")
     return counts.most_common(1)[0][0], None
 
 
@@ -253,12 +254,12 @@ def compute_class_stats(
             class_counts[code] += 1
 
     if invalid_area_count:
-        problems.append(FieldProblem(ENTITY_AREA_FIELD, "第四步结果", f"有 {invalid_area_count} 个耕地图斑实体面积为空、非数字或小于等于 0"))
+        problems.append(FieldProblem(ENTITY_AREA_FIELD, "第三步结果", f"有 {invalid_area_count} 个耕地图斑实体面积为空、非数字或小于等于 0"))
     if invalid_grade_count:
-        problems.append(FieldProblem(GRADE_FIELD, "第四步结果", f"有 {invalid_grade_count} 个耕地图斑质量等级为空或非数字"))
+        problems.append(FieldProblem(GRADE_FIELD, "第三步结果", f"有 {invalid_grade_count} 个耕地图斑质量等级为空或非数字"))
     if ignored_class_counts:
         detail = "、".join(f"{code}={count}" for code, count in ignored_class_counts.most_common(10))
-        problems.append(FieldProblem(LAND_CLASS_FIELD, "第四步结果", f"发现非 0101/0102/0103 地类要素：{detail}。第五步只接受第四步筛选后的耕地图斑结果"))
+        problems.append(FieldProblem(LAND_CLASS_FIELD, "第三步结果", f"发现非 0101/0102/0103 地类要素：{detail}。第四步只接受第三步筛选后的耕地图斑结果"))
 
     county_name, county_problem = mode_nonblank(county_values, COUNTY_NAME_FIELD)
     if county_problem:
@@ -269,10 +270,10 @@ def compute_class_stats(
         entity_area = class_sums[code]
         official_area = official_areas[code]
         if class_counts[code] <= 0:
-            problems.append(FieldProblem(LAND_CLASS_FIELD, "第四步结果", f"{code}{name} 没有可参与平差的要素"))
+            problems.append(FieldProblem(LAND_CLASS_FIELD, "第三步结果", f"{code}{name} 没有可参与平差的要素"))
             coefficient = 0.0
         elif entity_area <= 0:
-            problems.append(FieldProblem(ENTITY_AREA_FIELD, "第四步结果", f"{code}{name} 实体面积合计小于等于 0"))
+            problems.append(FieldProblem(ENTITY_AREA_FIELD, "第三步结果", f"{code}{name} 实体面积合计小于等于 0"))
             coefficient = 0.0
         else:
             coefficient = official_area / entity_area
@@ -295,9 +296,9 @@ def format_float(value: float, digits: int = 6) -> str:
 
 def build_preflight_text(report: AreaBalancePreflightReport) -> str:
     lines: list[str] = []
-    lines.append("第五步耕地面积平差前审查报告")
+    lines.append("第四步耕地面积平差前审查报告")
     lines.append("=" * 60)
-    lines.append(f"第四步结果：{source_label(report.source)}")
+    lines.append(f"第三步结果：{source_label(report.source)}")
     lines.append(f"输入要素数：{report.feature_count}")
     lines.append(f"县名称众数：{report.county_name or '未确定'}")
     lines.append("")
@@ -310,7 +311,7 @@ def build_preflight_text(report: AreaBalancePreflightReport) -> str:
             lines.append(f"   - {name}: 未匹配")
     lines.append("")
     lines.append("二、官方面积、实体面积和平差系数")
-    lines.append("   平差系数 = 用户输入的 2024 年湖北省耕地面积统计数据 / 第四步结果对应地类实体面积合计")
+    lines.append("   平差系数 = 用户输入的 2024 年湖北省耕地面积统计数据 / 第三步结果对应地类实体面积合计")
     for stat in report.class_stats:
         balanced_sum = stat.entity_area * stat.coefficient if stat.coefficient else 0.0
         lines.append(
@@ -353,7 +354,7 @@ def build_preflight_report(source: VectorSource, official_areas: dict[str, float
     try:
         score_tool.audit_output_schema(source_dataset_path(source))
     except Exception as exc:
-        problems.append(FieldProblem("固定字段结构", "第四步结果", str(exc)))
+        problems.append(FieldProblem("固定字段结构", "第三步结果", str(exc)))
     bindings, field_problems = bind_required_fields(source)
     problems.extend(field_problems)
     class_stats: list[AreaClassStats] = []
@@ -412,7 +413,7 @@ def add_or_find_weighted_area_field(feature_class: str) -> str:
 
 def copy_source_to_output(job: AreaBalanceJob) -> str:
     if job.output_kind != "gdb":
-        raise RuntimeError("第五步建议并要求输出到 GDB 面要素类，以保留中文字段和新增字段别名。")
+        raise RuntimeError("第四步建议并要求输出到 GDB 面要素类，以保留中文字段和新增字段别名。")
     if not job.output_feature_name:
         raise RuntimeError("输出到 GDB 时必须指定面要素类名称。")
     delete_output_dataset(job.output_path, job.output_feature_name)
@@ -560,7 +561,7 @@ class AreaBalanceWorker(threading.Thread):
         try:
             require_runtime()
             logger.info("任务开始：%s", job.job_id)
-            logger.info("第四步结果：%s", source_path_for_log(job.source))
+            logger.info("第三步结果：%s", source_path_for_log(job.source))
             logger.info("输出目标：%s", output_target)
             if job.validation_report:
                 logger.info("提交前审查报告：\n%s", job.validation_report)
@@ -574,6 +575,7 @@ class AreaBalanceWorker(threading.Thread):
                         f"平差完成：{output_fc}；"
                         f"{stats['weighted_grade_label']} = {format_float(float(stats['weighted_grade']), 6)}"
                     ),
+                    "output_path": output_fc,
                     "log_path": str(log_path),
                     "stats": stats,
                 },
@@ -597,8 +599,18 @@ class AreaBalanceWorker(threading.Thread):
 
 
 class AreaBalanceApp:
-    def __init__(self, root: Tk):
+    def __init__(
+        self,
+        root: Tk,
+        *,
+        embedded: bool = False,
+        shared_status_text: Text | None = None,
+        on_job_done: Callable[[dict], None] | None = None,
+    ):
         self.root = root
+        self.embedded = embedded
+        self.shared_status_text = shared_status_text
+        self.on_job_done = on_job_done
         self.paths = resolve_paths(Path.cwd())
         self.logs_dir = self.paths.outputs_dir / "logs"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -609,9 +621,10 @@ class AreaBalanceApp:
         self.gdb_sources: list[VectorSource] = []
 
         self.official_area_vars = {code: StringVar() for code, _name in CROPLAND_CLASSES}
+        self.coefficient_vars = {code: StringVar(value=f"{code}{name}: 尚未计算") for code, name in CROPLAND_CLASSES}
 
         self.output_gdb_var = StringVar()
-        self.output_feature_var = StringVar(value="最新耕地图斑_面积平差")
+        self.output_feature_var = StringVar(value="Step4_面积平差")
         self.result_grade_var = StringVar(value="尚未计算")
 
         self.last_report: AreaBalancePreflightReport | None = None
@@ -622,8 +635,10 @@ class AreaBalanceApp:
         self.worker = AreaBalanceWorker(self.job_queue, self.event_queue, self.logs_dir)
         self.worker.start()
 
-        self.root.title("第五步：耕地面积平差工具（ArcPy）")
-        self.root.geometry("1060x760")
+        if not self.embedded:
+            self.root.title("第四步：耕地面积平差工具（ArcPy）")
+            self.root.geometry("1060x760")
+            self.root.minsize(1060, 700)
         self.build_ui()
         self.root.after(200, self.poll_worker_events)
 
@@ -631,11 +646,11 @@ class AreaBalanceApp:
         container = ttk.Frame(self.root, padding=10)
         container.pack(fill=BOTH, expand=True)
 
-        input_frame = ttk.LabelFrame(container, text="1. 输入第四步结果")
+        input_frame = ttk.LabelFrame(container, text="1. 输入第三步结果")
         input_frame.pack(fill="x", pady=5)
         row = ttk.Frame(input_frame)
         row.pack(fill="x", padx=5, pady=4)
-        ttk.Label(row, text="第四步结果", width=12).pack(side=LEFT)
+        ttk.Label(row, text="第三步结果", width=12).pack(side=LEFT)
         ttk.Entry(row, textvariable=self.source_path_var).pack(side=LEFT, fill="x", expand=True, padx=5)
         ttk.Button(row, text="选择 shp", command=self.choose_shp).pack(side=LEFT, padx=3)
         ttk.Button(row, text="选择 gdb", command=self.choose_gdb).pack(side=LEFT, padx=3)
@@ -654,9 +669,14 @@ class AreaBalanceApp:
             ttk.Label(area_row, text=f"{code}{name}", width=12).pack(side=LEFT)
             ttk.Entry(area_row, textvariable=self.official_area_vars[code], width=24).pack(side=LEFT, padx=5)
 
-        output_frame = ttk.LabelFrame(container, text="3. 输出位置")
+        coefficient_frame = ttk.LabelFrame(container, text="3. 平差系数预览")
+        coefficient_frame.pack(fill="x", pady=5)
+        for code, _name in CROPLAND_CLASSES:
+            ttk.Label(coefficient_frame, textvariable=self.coefficient_vars[code]).pack(anchor="w", padx=5, pady=2)
+
+        output_frame = ttk.LabelFrame(container, text="4. 输出位置")
         output_frame.pack(fill="x", pady=5)
-        ttk.Label(output_frame, text="第五步固定输出为 GDB 面要素类；不建议使用 Shapefile 保存平差结果。").pack(anchor="w", padx=5, pady=2)
+        ttk.Label(output_frame, text="第四步固定输出为 GDB 面要素类；不建议使用 Shapefile 保存平差结果。").pack(anchor="w", padx=5, pady=2)
         gdb_row = ttk.Frame(output_frame)
         gdb_row.pack(fill="x", padx=5, pady=2)
         ttk.Label(gdb_row, text="GDB").pack(side=LEFT)
@@ -666,11 +686,11 @@ class AreaBalanceApp:
         ttk.Label(gdb_row, text="面要素类名").pack(side=LEFT, padx=5)
         ttk.Entry(gdb_row, textvariable=self.output_feature_var, width=26).pack(side=LEFT)
 
-        result_frame = ttk.LabelFrame(container, text="4. 加权平均结果")
+        result_frame = ttk.LabelFrame(container, text="5. 加权平均结果")
         result_frame.pack(fill="x", pady=5)
         ttk.Label(result_frame, textvariable=self.result_grade_var, font=("", 12, "bold")).pack(anchor="w", padx=5, pady=6)
 
-        report_frame = ttk.LabelFrame(container, text="5. 审查报告、日志和历史记录")
+        report_frame = ttk.LabelFrame(container, text="6. 审查报告、日志和历史记录")
         report_frame.pack(fill="both", expand=True, pady=5)
         action_row = ttk.Frame(report_frame)
         action_row.pack(fill="x")
@@ -679,12 +699,16 @@ class AreaBalanceApp:
         ttk.Button(action_row, text="查看历史记录", command=self.show_history).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="打开日志文件夹", command=self.open_logs_folder).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="删除日志", command=self.delete_logs).pack(side=LEFT, padx=5, pady=4)
-        self.status_text = Text(report_frame, height=22, wrap="word")
-        self.status_text.pack(fill="both", expand=True, padx=5, pady=5)
-        self.log_status("工具已启动。请先选择第四步结果并填写三类官方面积。")
+        if self.shared_status_text is None:
+            self.status_text = Text(report_frame, height=22, wrap="word")
+            self.status_text.pack(fill="both", expand=True, padx=5, pady=5)
+        else:
+            self.status_text = self.shared_status_text
+            ttk.Label(report_frame, text="运行详细信息显示在窗口底部“详细信息”区域。").pack(anchor="w", padx=5, pady=5)
+        self.log_status("第四步工具已启动。请先选择第三步结果并填写三类官方面积。")
 
     def choose_shp(self) -> None:
-        path = filedialog.askopenfilename(title="选择第四步结果 shp", filetypes=[("Shapefile", "*.shp")])
+        path = filedialog.askopenfilename(title="选择第三步结果 shp", filetypes=[("Shapefile", "*.shp")])
         if not path:
             return
         self.source = make_vector_source("shp", Path(path))
@@ -693,7 +717,7 @@ class AreaBalanceApp:
         self.gdb_sources = []
         self.layer_combo["values"] = []
         self.last_report = None
-        self.log_status(f"已选择第四步结果 Shapefile：{source_label(self.source)}")
+        self.log_status(f"已选择第三步结果 Shapefile：{source_label(self.source)}")
 
     def choose_gdb(self) -> None:
         path = filedialog.askdirectory(title="选择输入 .gdb 文件夹")
@@ -717,7 +741,7 @@ class AreaBalanceApp:
         self.source_layer_var.set(str(sources[0].layer_name))
         self.source = sources[0]
         self.last_report = None
-        self.log_status(f"已选择第四步结果 GDB：{gdb_path}，面图层数量 {len(sources)}。")
+        self.log_status(f"已选择第三步结果 GDB：{gdb_path}，面图层数量 {len(sources)}。")
 
     def update_source_from_layer(self, _event=None) -> None:
         layer_name = self.source_layer_var.get()
@@ -725,7 +749,7 @@ class AreaBalanceApp:
             if source.layer_name == layer_name:
                 self.source = source
                 self.last_report = None
-                self.log_status(f"已选择第四步结果 GDB 面图层：{source_label(source)}")
+                self.log_status(f"已选择第三步结果 GDB 面图层：{source_label(source)}")
                 return
 
     def choose_output_gdb(self) -> None:
@@ -762,7 +786,7 @@ class AreaBalanceApp:
 
     def validate_current_inputs(self) -> None:
         if self.source is None:
-            messagebox.showwarning("提示", "请先选择第四步结果。")
+            messagebox.showwarning("提示", "请先选择第三步结果。")
             return
         official_areas = self.current_official_areas()
         if official_areas is None:
@@ -775,12 +799,26 @@ class AreaBalanceApp:
             return
         self.last_report = report
         self.last_report_key = self.report_key()
+        self.update_coefficient_preview(report)
         self.show_report(report, ask_continue=False)
         self.log_status("审查通过，可以提交平差任务。" if report.ok else "审查未通过，已在报告中列出问题。")
 
+    def update_coefficient_preview(self, report: AreaBalancePreflightReport) -> None:
+        stats_by_code = {stat.code: stat for stat in report.class_stats}
+        for code, name in CROPLAND_CLASSES:
+            stat = stats_by_code.get(code)
+            if stat is None:
+                self.coefficient_vars[code].set(f"{code}{name}: 尚未计算")
+                continue
+            self.coefficient_vars[code].set(
+                f"{code}{name}: 平差系数 {format_float(stat.coefficient, 10)}；"
+                f"实体面积 {format_float(stat.entity_area, 6)} 公顷；"
+                f"官方面积 {format_float(stat.official_area, 6)} 公顷"
+            )
+
     def show_report(self, report: AreaBalancePreflightReport, ask_continue: bool) -> bool:
         window = Toplevel(self.root)
-        window.title("第五步平差前审查报告")
+        window.title("第四步平差前审查报告")
         window.geometry("1020x700")
         text = Text(window, wrap="word")
         text.pack(fill=BOTH, expand=True, padx=8, pady=8)
@@ -815,13 +853,15 @@ class AreaBalanceApp:
             messagebox.showwarning("提示", "请选择 GDB 并填写面要素类名。")
             return None
         output_path = Path(gdb_text if gdb_text.lower().endswith(".gdb") else f"{gdb_text}.gdb")
-        validation_workspace = str(output_path if output_path.exists() else output_path.parent)
-        output_feature_name = arcpy.ValidateTableName(feature_name, validation_workspace)
+        output_feature_name = membership_tool.validate_gdb_feature_name(feature_name, output_path)
+        if output_feature_name != feature_name:
+            self.output_feature_var.set(output_feature_name)
+            self.log_status(f"输出要素类名已按 FileGDB 规则修正为：{output_feature_name}")
         return "gdb", output_path, output_feature_name
 
     def submit_job(self) -> None:
         if self.source is None:
-            messagebox.showwarning("提示", "请先选择第四步结果。")
+            messagebox.showwarning("提示", "请先选择第三步结果。")
             return
         output = self.output_settings()
         if output is None:
@@ -830,10 +870,10 @@ class AreaBalanceApp:
         output_dataset = output_dataset_path(output_kind, output_path, output_feature_name)
         input_dataset = Path(source_dataset_path(self.source)).resolve()
         if output_dataset.resolve() == input_dataset:
-            messagebox.showerror("输出错误", "输出结果不能覆盖第四步输入数据，请换一个输出名称。")
+            messagebox.showerror("输出错误", "输出结果不能覆盖第三步输入数据，请换一个输出名称。")
             return
         if self.source.kind == "gdb" and output_path.resolve() == self.source.source_path.resolve():
-            self.log_status(f"输出将保存到第四步结果所在 GDB 的新图层：{output_feature_name}")
+            self.log_status(f"输出将保存到第三步结果所在 GDB 的新图层：{output_feature_name}")
         try:
             report = self.last_report
             if report is None or self.last_report_key != self.report_key():
@@ -875,6 +915,8 @@ class AreaBalanceApp:
                 if event_type == "job_done" and payload.get("stats"):
                     stats = payload["stats"]
                     self.result_grade_var.set(f"{stats['weighted_grade_label']} = {format_float(float(stats['weighted_grade']), 6)}")
+                if event_type == "job_done" and self.on_job_done:
+                    self.on_job_done(payload)
                 if event_type in {"job_done", "job_failed"} and payload.get("log_path"):
                     self.log_status(f"日志：{payload['log_path']}")
         except queue.Empty:
@@ -891,7 +933,7 @@ class AreaBalanceApp:
             messagebox.showinfo("历史记录", "暂无历史记录。")
             return
         window = Toplevel(self.root)
-        window.title("第五步平差历史记录")
+        window.title("第四步平差历史记录")
         window.geometry("1000x640")
         text = Text(window, wrap="word")
         text.pack(fill=BOTH, expand=True, padx=8, pady=8)
@@ -907,7 +949,7 @@ class AreaBalanceApp:
             text.insert(
                 END,
                 f"任务 {record.get('job_id')} | {record.get('status')} | {record.get('created_at')}\n"
-                f"第四步结果：{record.get('source')}\n"
+                f"第三步结果：{record.get('source')}\n"
                 f"输出：{record.get('output_path')}\n"
                 f"结果：{stats.get('weighted_grade_label', '')}={stats.get('weighted_grade', '')}\n"
                 f"日志：{record.get('log_path')}\n"
@@ -925,7 +967,7 @@ class AreaBalanceApp:
             messagebox.showerror("打开失败", str(exc))
 
     def delete_logs(self) -> None:
-        if not messagebox.askyesno("确认删除", "确定删除第五步平差日志和历史记录吗？"):
+        if not messagebox.askyesno("确认删除", "确定删除第四步平差日志和历史记录吗？"):
             return
         deleted = 0
         for path in self.logs_dir.glob("area_balance_*.log"):
@@ -935,7 +977,24 @@ class AreaBalanceApp:
         if history_path.exists():
             history_path.unlink()
             deleted += 1
-        self.log_status(f"已删除 {deleted} 个第五步日志/历史文件。")
+        self.log_status(f"已删除 {deleted} 个第四步日志/历史文件。")
+
+    def reset_inputs(self) -> None:
+        self.source_path_var.set("")
+        self.source_layer_var.set("")
+        self.source = None
+        self.gdb_sources = []
+        if hasattr(self, "layer_combo"):
+            self.layer_combo["values"] = []
+        for code, name in CROPLAND_CLASSES:
+            self.official_area_vars[code].set("")
+            self.coefficient_vars[code].set(f"{code}{name}: 尚未计算")
+        self.output_gdb_var.set("")
+        self.output_feature_var.set("Step4_面积平差")
+        self.result_grade_var.set("尚未计算")
+        self.last_report = None
+        self.last_report_key = None
+        self.log_status("第四步输入和参数已恢复为启动默认值。")
 
 
 def main() -> int:

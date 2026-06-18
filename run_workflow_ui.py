@@ -1,4 +1,4 @@
-"""Launch the ArcPy membership, score, and grade calculation UI."""
+"""Launch the unified four-step workflow UI."""
 
 from pathlib import Path
 import sys
@@ -9,7 +9,7 @@ SRC_DIR = WORKSPACE_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from cropland_quality_update.tools.membership_arcpy_ui import main
+from cropland_quality_update.tools.workflow_arcpy_ui import main
 
 
 if __name__ == "__main__":
