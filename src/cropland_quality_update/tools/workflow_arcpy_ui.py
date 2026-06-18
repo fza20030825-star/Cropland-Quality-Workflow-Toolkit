@@ -13,6 +13,8 @@ from cropland_quality_update.tools import update_scores_arcpy_ui as score_tool
 
 WINDOW_GEOMETRY = "1280x900"
 WINDOW_MIN_SIZE = (1180, 760)
+SCROLLABLE_WIDGET_CLASSES = {"Treeview", "Text", "Listbox", "Canvas"}
+SCROLLBAR_WIDGET_CLASSES = {"Scrollbar", "TScrollbar"}
 
 
 class ScrollableStepFrame(ttk.Frame):
@@ -50,11 +52,30 @@ class ScrollableStepFrame(ttk.Frame):
         self.canvas.unbind_all("<MouseWheel>")
         self.canvas.unbind_all("<Shift-MouseWheel>")
 
-    def _on_mousewheel(self, event) -> None:
-        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+    def _event_in_nested_scrollable(self, event) -> bool:
+        widget = getattr(event, "widget", None)
+        while widget is not None:
+            if widget is self.canvas or widget is self.content:
+                return False
+            widget_class = str(widget.winfo_class())
+            if widget_class in SCROLLBAR_WIDGET_CLASSES:
+                return True
+            if widget_class in SCROLLABLE_WIDGET_CLASSES:
+                return True
+            widget = getattr(widget, "master", None)
+        return False
 
-    def _on_shift_mousewheel(self, event) -> None:
+    def _on_mousewheel(self, event):
+        if self._event_in_nested_scrollable(event):
+            return "break"
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"
+
+    def _on_shift_mousewheel(self, event):
+        if self._event_in_nested_scrollable(event):
+            return "break"
         self.canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"
 
     def scroll_to_top(self) -> None:
         self.canvas.yview_moveto(0)
