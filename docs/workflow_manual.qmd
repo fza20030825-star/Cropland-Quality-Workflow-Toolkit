@@ -5,6 +5,14 @@ format: html
 
 # 直接启动统一 UI
 
+在 Windows 资源管理器中，直接双击项目根目录的启动文件：
+
+```text
+Start_CroplandQualityWorkflow.cmd
+```
+
+该启动文件会自动切换到项目根目录，并调用 ArcGIS Pro Python 环境打开统一 UI，不需要打开 IDE。启动文件会按顺序查找常见 ArcGIS Pro Python 路径、当前项目常用的 `D:\anaconda3\envs\arcgispro-py3\python.exe`，以及系统 `PATH` 中能够成功 `import arcpy` 的 `python.exe`；如果全部找不到，会在命令窗口中提示用户检查 ArcGIS Pro Python 环境。
+
 在项目根目录、ArcGIS Pro Python 环境中运行：
 
 ```powershell
@@ -34,13 +42,13 @@ subprocess.Popen([sys.executable, "run_workflow_ui.py"])
 
 | 流程 | 说明 |
 | --- | --- |
-| 全流程 UI | `python run_workflow_ui.py` 是唯一正式图形入口，四步合并在同一窗口中，支持前一步结果自动填写到下一步输入。 |
+| 全流程 UI | 双击 `Start_CroplandQualityWorkflow.cmd` 或命令行运行 `python run_workflow_ui.py` 进入唯一正式图形入口；四步合并在同一窗口中，支持前一步结果自动填写到下一步输入。 |
 | 第一步：计算高标隶属度 | 整合多源高标准农田面数据的 13 个评价指标，计算隶属度、评价得分和质量等级。 |
 | 第二步：更新隶属度 | 将第一步结果更新到现有农田面副本。 |
 | 第三步：更新三调图斑 | 将第二步结果更新到最新三调图斑中的耕地图斑。 |
 | 第四步：面积平差 | 按官方面积统计进行平差，并计算县域耕地质量等级。 |
 
-用户只运行 `run_workflow_ui.py`。
+用户只使用上述统一入口，不再使用任何旧版单步 UI。
 
 # 统一界面
 
@@ -548,7 +556,7 @@ data/rules/
 
 建议专业人员依次确认：
 
-1. 当前使用 `run_workflow_ui.py` 作为唯一正式图形入口。
+1. 当前使用 `Start_CroplandQualityWorkflow.cmd` 或 `run_workflow_ui.py` 作为唯一正式图形入口。
 2. 所有过程结果均保存为 FileGDB 面要素类。
 3. 第一步选择的国标二级农业区和规则文件正确。
 4. 第一步字段匹配报告没有缺失、歧义、类型错误、空值和规则外类别值。

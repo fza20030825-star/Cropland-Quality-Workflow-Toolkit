@@ -15,6 +15,14 @@ python -m pip install -r requirements.txt
 
 ## 推荐入口
 
+在 Windows 资源管理器中，直接双击项目根目录的：
+
+```text
+Start_CroplandQualityWorkflow.cmd
+```
+
+该启动文件会自动使用 ArcGIS Pro Python 环境打开统一 UI，不需要打开 IDE。如果需要在命令行中启动，也可以运行：
+
 ```powershell
 python run_workflow_ui.py
 ```
@@ -25,13 +33,13 @@ python run_workflow_ui.py
 
 | 流程 | 功能 |
 | --- | --- |
-| 全流程 | 唯一正式图形入口，由 `run_workflow_ui.py` 启动。 |
+| 全流程 | 唯一正式图形入口；可双击 `Start_CroplandQualityWorkflow.cmd`，也可命令行运行 `run_workflow_ui.py`。 |
 | 1 | 计算高标隶属度：从多源高标准农田面数据中整合 13 个评价指标，按国标二级农业区规则计算 13 个隶属度、评价得分和质量等级。 |
 | 2 | 更新隶属度：把第一步结果按空间叠置规则更新到现有农田面副本，输出固定 39 字段。 |
 | 3 | 更新三调图斑：筛选最新三调图斑中 `地类编码=0101/0102/0103` 的耕地，按第二步结果赋值并输出固定 39 字段。 |
 | 4 | 面积平差：按 2024 年湖北省耕地面积统计数据计算平差系数、平差面积、等级面积和县域加权平均质量等级。 |
 
-用户只需要运行 `run_workflow_ui.py`。
+用户只需要使用上述统一入口，不再使用任何旧版单步 UI。
 
 ## 强烈建议使用 GDB
 
