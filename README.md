@@ -21,7 +21,11 @@ python -m pip install -r requirements.txt
 Start_CroplandQualityWorkflow.cmd
 ```
 
-该启动文件会自动使用 ArcGIS Pro Python 环境打开统一 UI，不需要打开 IDE。如果需要在命令行中启动，也可以运行：
+该启动文件会自动查找能够成功 `import arcpy` 的 ArcGIS Pro Python 环境，并在打开统一 UI 前要求用户确认当前环境，不需要打开 IDE。找到的路径会缓存到当前用户的 `%LOCALAPPDATA%\CroplandQualityWorkflowToolkit\arcgis_python_path.txt`，以后启动会先验证并复用该路径以加快定位；但缓存只用于查找加速，每次启动仍会显示当前环境并询问是否使用。如果缓存路径失效，会重新搜索。
+
+如果自动搜索仍找不到环境，或者用户不想使用当前环境，命令窗口会停留在选择界面，引导用户先输入 ArcGIS Pro 安装目录；如果仍找不到，再允许用户输入精确的 `python.exe` 路径，并逐次检查是否能够导入 `arcpy`。熟悉 Python/IDE 的用户仍可在 VS Code 等环境中手动选择 ArcGIS Pro Python，并运行：
+
+`Start_CroplandQualityWorkflow.cmd` 是双击入口，内部会调用 `Start_CroplandQualityWorkflow.ps1` 完成中文提示和环境查找；普通用户不需要手动运行 `.ps1` 文件。
 
 ```powershell
 python run_workflow_ui.py

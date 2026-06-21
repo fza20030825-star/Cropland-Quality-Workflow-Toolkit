@@ -11,7 +11,22 @@ format: html
 Start_CroplandQualityWorkflow.cmd
 ```
 
-该启动文件会自动切换到项目根目录，并调用 ArcGIS Pro Python 环境打开统一 UI，不需要打开 IDE。启动文件会按顺序查找常见 ArcGIS Pro Python 路径、当前项目常用的 `D:\anaconda3\envs\arcgispro-py3\python.exe`，以及系统 `PATH` 中能够成功 `import arcpy` 的 `python.exe`；如果全部找不到，会在命令窗口中提示用户检查 ArcGIS Pro Python 环境。
+该启动文件会自动切换到项目根目录，并调用 ArcGIS Pro Python 环境打开统一 UI，不需要打开 IDE。
+
+`Start_CroplandQualityWorkflow.cmd` 是面向用户的双击入口，内部会调用 `Start_CroplandQualityWorkflow.ps1` 完成中文提示、环境查找和路径缓存。普通用户只需要双击 `.cmd`，不需要手动运行 `.ps1`。
+
+启动器寻找环境的顺序如下：
+
+1. 先读取当前用户缓存的 ArcGIS Pro Python 路径，缓存文件为 `%LOCALAPPDATA%\CroplandQualityWorkflowToolkit\arcgis_python_path.txt`。
+2. 对缓存路径执行 `import arcpy` 检查；如果检查通过，会把该路径作为候选环境展示给用户确认，因此第二次及以后启动更快。
+3. 如果缓存不存在或路径失效，自动搜索标准 ArcGIS Pro Python 路径，以及系统 `PATH` 中能够成功 `import arcpy` 的 `python.exe`。
+4. 如果找到候选环境，启动器会显示路径和来源，并要求用户确认是否使用；缓存只用于加快定位，不会跳过用户确认。
+5. 用户如果认为当前环境可能被额外安装过很多包、存在依赖冲突，可以在确认界面改为输入 ArcGIS Pro 安装目录、输入精确 `python.exe` 路径，或重新自动搜索。
+6. 如果自动搜索失败，命令窗口会停留在选择界面，引导用户先输入 ArcGIS Pro 安装目录，例如 `C:\Program Files\ArcGIS\Pro`。
+7. 如果通过安装目录仍找不到，用户可以继续输入精确的 `python.exe` 路径；启动器会检查该 Python 是否能够 `import arcpy`。
+8. 只要输入的路径不正确或用户没有确认，启动器不会进入正式 UI，而是继续停留在选择界面，直到找到并确认正确环境或用户主动退出。
+
+了解 Python/IDE 的用户也可以继续使用传统方式：在 VS Code、命令行或其他 IDE 中选择 ArcGIS Pro Python 环境，然后运行 `run_workflow_ui.py`。
 
 在项目根目录、ArcGIS Pro Python 环境中运行：
 
