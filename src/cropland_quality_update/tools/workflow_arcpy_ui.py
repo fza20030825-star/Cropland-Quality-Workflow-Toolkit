@@ -6,6 +6,8 @@ from pathlib import Path
 from tkinter import BOTH, END, HORIZONTAL, LEFT, VERTICAL, Canvas, IntVar, StringVar, Text, Tk, filedialog, messagebox, ttk
 
 from cropland_quality_update.tools import area_balance_arcpy_ui as area_tool
+from cropland_quality_update.tools import fill_tillage_depth_arcpy_ui as depth_tool
+from cropland_quality_update.tools import gb_to_sanpu_arcpy_ui as convert_tool
 from cropland_quality_update.tools import membership_arcpy_ui as membership_tool
 from cropland_quality_update.tools import update_land_blocks_arcpy_ui as land_tool
 from cropland_quality_update.tools import update_scores_arcpy_ui as score_tool
@@ -105,25 +107,27 @@ class WorkflowApp:
 
         selector = ttk.LabelFrame(self.root, text="流程选择")
         selector.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
-        selector.columnconfigure(4, weight=1)
+        selector.columnconfigure(6, weight=1)
         steps = [
             (1, "第一步 计算高标隶属度"),
             (2, "第二步 更新隶属度"),
             (3, "第三步 更新三调图斑"),
             (4, "第四步 面积平差"),
+            (5, "辅助 国标转三普"),
+            (6, "辅助 补耕层厚度"),
         ]
-        for index, label in steps:
+        for column, (index, label) in enumerate(steps):
             ttk.Radiobutton(
                 selector,
                 text=label,
                 variable=self.current_step,
                 value=index,
                 command=lambda step=index: self.show_step(step),
-            ).grid(row=0, column=index - 1, padx=8, pady=6, sticky="w")
-        ttk.Button(selector, text="恢复默认输入", command=self.reset_workflow_inputs).grid(row=0, column=4, padx=12, pady=6, sticky="e")
+            ).grid(row=0, column=column, padx=8, pady=6, sticky="w")
+        ttk.Button(selector, text="恢复默认输入", command=self.reset_workflow_inputs).grid(row=0, column=6, padx=12, pady=6, sticky="e")
 
         gdb_row = ttk.Frame(selector)
-        gdb_row.grid(row=1, column=0, columnspan=5, sticky="ew", padx=8, pady=(0, 6))
+        gdb_row.grid(row=1, column=0, columnspan=7, sticky="ew", padx=8, pady=(0, 6))
         gdb_row.columnconfigure(1, weight=1)
         ttk.Label(gdb_row, text="统一输出 GDB").grid(row=0, column=0, sticky="w")
         ttk.Entry(gdb_row, textvariable=self.shared_output_gdb_var).grid(row=0, column=1, sticky="ew", padx=6)
@@ -150,7 +154,7 @@ class WorkflowApp:
         self.create_step_pages()
 
     def create_step_pages(self) -> None:
-        for step in range(1, 5):
+        for step in range(1, 7):
             page = ScrollableStepFrame(self.page_host)
             self.step_pages[step] = page
 
@@ -177,6 +181,18 @@ class WorkflowApp:
             embedded=True,
             shared_status_text=self.status_text,
             on_job_done=lambda payload: self.handle_step_done(4, payload),
+        )
+        self.step_apps[5] = convert_tool.GbToSanpuApp(
+            self.step_pages[5].content,
+            embedded=True,
+            shared_status_text=self.status_text,
+            on_job_done=lambda payload: self.handle_step_done(5, payload),
+        )
+        self.step_apps[6] = depth_tool.TillageDepthFillApp(
+            self.step_pages[6].content,
+            embedded=True,
+            shared_status_text=self.status_text,
+            on_job_done=lambda payload: self.handle_step_done(6, payload),
         )
         self.setup_output_gdb_sync()
 
@@ -244,6 +260,11 @@ class WorkflowApp:
             elif step == 3:
                 self.fill_area_balance_input(output_path)
                 self.show_step(4)
+            elif step == 5:
+                self.fill_score_result_input(output_path)
+                self.show_step(2)
+            elif step == 6:
+                self.log_status(f"补耕层厚度输出完成，可作为国标转三普辅助工具的输入：{output_path}")
         except Exception as exc:
             self.log_status(f"自动填写下一步输入失败：{exc}")
 
@@ -355,6 +376,8 @@ def main() -> int:
         score_tool.require_runtime,
         land_tool.require_runtime,
         area_tool.require_runtime,
+        convert_tool.require_runtime,
+        depth_tool.require_runtime,
     ):
         try:
             require()
