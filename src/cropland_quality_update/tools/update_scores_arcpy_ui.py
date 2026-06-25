@@ -319,6 +319,10 @@ def canonical_update_field_names() -> list[str]:
     return list(UPDATE_FIELD_NAMES)
 
 
+def required_update_field_names() -> list[str]:
+    return [name for name in UPDATE_FIELD_NAMES if name not in OPTIONAL_RESULT_FIELD_NAMES]
+
+
 def validate_polygon_source(source: VectorSource, label: str) -> int:
     dataset = source_dataset_path(source)
     if not arcpy.Exists(dataset):
@@ -479,8 +483,9 @@ def build_preflight_report(
     bindings, field_problems, warnings = build_field_bindings(target_source, result_source)
     warnings = source_warnings + warnings
     problems.extend(field_problems)
-    expected_count = len([name for name in canonical_update_field_names() if name not in OPTIONAL_RESULT_FIELD_NAMES])
-    matched_required_count = len([binding for binding in bindings if binding.canonical_name not in OPTIONAL_RESULT_FIELD_NAMES])
+    required_names = set(required_update_field_names())
+    expected_count = len(required_names)
+    matched_required_count = len([binding for binding in bindings if binding.canonical_name in required_names])
     ok = not problems and matched_required_count == expected_count
     draft = UpdatePreflightReport(
         ok=ok,
@@ -582,7 +587,13 @@ def build_blank_result_report(
     return missing_total == 0, "\n".join(lines), stats
 
 
-def values_equivalent_for_audit(actual, expected) -> bool:
+def values_equivalent_for_audit(actual, expected, canonical_name: str | None = None) -> bool:
+    if (
+        canonical_name in OPTIONAL_RESULT_FIELD_NAMES
+        and membership_tool.is_blank_value(actual)
+        and membership_tool.is_blank_value(expected)
+    ):
+        return True
     if membership_tool.is_blank_value(actual) or membership_tool.is_blank_value(expected):
         return False
     if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
@@ -630,7 +641,7 @@ def build_update_match_report(
             field_issues: list[str] = []
             for binding, actual, raw_expected in zip(output_field_bindings, actual_values, expected_values):
                 expected = coerce_value_for_field(raw_expected, fields_by_name[binding.target_field])
-                if values_equivalent_for_audit(actual, expected):
+                if values_equivalent_for_audit(actual, expected, binding.canonical_name):
                     continue
                 issue_by_field[binding.target_field] += 1
                 field_issues.append(
@@ -1307,7 +1318,6 @@ class ScoreUpdateApp:
         report_frame.pack(fill="both", expand=True, pady=5)
         action_row = ttk.Frame(report_frame)
         action_row.pack(fill="x")
-        ttk.Button(action_row, text="开始审查", command=self.validate_current_inputs).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="提交更新任务", command=self.submit_job).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="查看历史记录", command=self.show_history).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="打开日志文件夹", command=self.open_logs_folder).pack(side=LEFT, padx=5, pady=4)
@@ -1502,19 +1512,19 @@ class ScoreUpdateApp:
             source_label(self.target_projection_source) if self.target_projection_source else "",
         )
 
-    def validate_current_inputs(self) -> None:
+    def validate_current_inputs(self, show_report: bool = True):
         if self.target_source is None:
             messagebox.showwarning("提示", "请先选择现有农田面。")
-            return
+            return None
         if self.result_source is None:
             messagebox.showwarning("提示", "请先选择第一步结果。")
-            return
+            return None
         self.update_target_projection()
         if self.target_projection_source is None or self.target_spatial_reference is None:
             messagebox.showwarning("提示", "请先选择有效的统一投影。")
-            return
+            return None
         try:
-            self.log_status("开始审查坐标和字段匹配。")
+            self.log_status("正在进行提交前审查：坐标和字段匹配。")
             report = build_preflight_report(
                 self.target_source,
                 self.result_source,
@@ -1523,11 +1533,13 @@ class ScoreUpdateApp:
             )
         except Exception as exc:
             messagebox.showerror("审查失败", str(exc))
-            return
+            return None
         self.last_report = report
         self.last_report_key = self.report_key()
-        self.show_report(report, ask_continue=False)
-        self.log_status("审查通过，可以提交更新任务。" if report.ok else "审查未通过，已在报告中列出问题。")
+        if show_report:
+            self.show_report(report, ask_continue=False)
+            self.log_status("审查通过，可以提交更新任务。" if report.ok else "审查未通过，已在报告中列出问题。")
+        return report
 
     def show_report(self, report: UpdatePreflightReport, ask_continue: bool) -> bool:
         window = Toplevel(self.root)
@@ -1600,14 +1612,13 @@ class ScoreUpdateApp:
         try:
             report = self.last_report
             if report is None or self.last_report_key != self.report_key():
-                self.log_status("当前输入没有最新审查报告，正在重新审查。")
-                self.validate_current_inputs()
-                report = self.last_report
+                self.log_status("当前输入没有最新审查报告，正在进行提交前自动审查。")
+                report = self.validate_current_inputs(show_report=False)
             if report is None:
                 return
             if not report.ok:
                 self.show_report(report, ask_continue=False)
-                messagebox.showerror("审查未通过", "输入数据存在问题，不能更新。请先按报告修正。")
+                self.log_status("提交前审查未通过，任务未提交。")
                 return
         except Exception as exc:
             messagebox.showerror("提交失败", str(exc))

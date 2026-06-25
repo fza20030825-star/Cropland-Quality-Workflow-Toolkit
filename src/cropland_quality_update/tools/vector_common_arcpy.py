@@ -233,8 +233,9 @@ def prepare_sources(
 
 
 class ScrollableCheckList(ttk.Frame):
-    def __init__(self, master):
+    def __init__(self, master, on_change=None):
         super().__init__(master)
+        self.on_change = on_change
         self.selected_keys: set[str] = set()
         self.source_map: dict[str, VectorSource] = {}
         self.tree = ttk.Treeview(self, columns=("selected", "type", "source"), show="headings", height=10, selectmode="browse")
@@ -268,6 +269,7 @@ class ScrollableCheckList(ttk.Frame):
             if key in existing_selected:
                 self.selected_keys.add(key)
             self.tree.insert("", END, iid=key, values=("✓" if key in self.selected_keys else "", source.kind.upper(), source_label(source)))
+        self._notify_change()
 
     def _toggle_event(self, _event=None) -> str:
         self.toggle_current()
@@ -295,6 +297,7 @@ class ScrollableCheckList(ttk.Frame):
             self.selected_keys.add(key)
         source = self.source_map[key]
         self.tree.item(key, values=("✓" if key in self.selected_keys else "", source.kind.upper(), source_label(source)))
+        self._notify_change()
 
     def selected_sources(self) -> list[VectorSource]:
         return [self.source_map[key] for key in self.tree.get_children() if key in self.selected_keys]
@@ -303,3 +306,8 @@ class ScrollableCheckList(ttk.Frame):
         self.selected_keys = set(self.source_map.keys()) if value else set()
         for key, source in self.source_map.items():
             self.tree.item(key, values=("✓" if key in self.selected_keys else "", source.kind.upper(), source_label(source)))
+        self._notify_change()
+
+    def _notify_change(self) -> None:
+        if self.on_change is not None:
+            self.on_change()

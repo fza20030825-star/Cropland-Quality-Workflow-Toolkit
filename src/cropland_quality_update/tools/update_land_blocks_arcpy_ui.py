@@ -52,6 +52,10 @@ LAND_BLOCK_FIELD_SPECS = {
 }
 
 
+def required_evaluation_field_names() -> list[str]:
+    return score_tool.required_update_field_names()
+
+
 @dataclass(frozen=True)
 class FieldBinding:
     output_field: str
@@ -322,6 +326,7 @@ def build_preflight_text(report: TransferPreflightReport) -> str:
     lines.append("最新三调图斑：只保留地类编码为 0101、0102、0103 的耕地图斑，其余地类不进入输出。")
     lines.append("实体面积、实体长度：由输出几何重新计算，单位分别为公顷和 km；实体类型固定为“面”；平差面积留空。")
     lines.append(f"耕评字段：只要与第二步结果有任意有效重叠，就按最大重叠面积赋值；完全没有重叠时，使用{nearest_mode_text(report.nearest_mode)}。")
+    lines.append("有值第二步结果的判定会检查必需耕评字段非空；非海拔必需区允许“海拔高度”和“F海拔高度”为空。")
     lines.append("")
     lines.append("三、需要修正的问题")
     if report.problems:
@@ -1235,8 +1240,9 @@ def calculate_transfer(job: TransferJob, temp_dir: Path, logger: logging.Logger)
 
         total_areas = score_tool.build_target_area_map(target_analysis_fc, target_id_field)
         quality_result_fields = [result_field_map[field] for field in EVALUATION_FIELD_NAMES]
+        required_quality_result_fields = [result_field_map[field] for field in required_evaluation_field_names()]
         result_values = score_tool.build_result_value_map(result_analysis_fc, result_id_field, quality_result_fields)
-        valid_result_ids = build_valid_result_ids(result_analysis_fc, result_id_field, quality_result_fields)
+        valid_result_ids = build_valid_result_ids(result_analysis_fc, result_id_field, required_quality_result_fields)
         result_area_map = score_tool.build_target_area_map(result_analysis_fc, result_id_field)
         result_class_field = result_field_map[LAND_CLASS_FIELD]
         target_class_field = score_tool.field_name_case_insensitive(target_analysis_fc, output_field_map[LAND_CLASS_FIELD])
@@ -1328,12 +1334,12 @@ def calculate_transfer(job: TransferJob, temp_dir: Path, logger: logging.Logger)
 
         blank_ok, blank_text, blank_stats = score_tool.build_blank_result_report(
             output_fc,
-            EVALUATION_FIELD_NAMES,
-            "第三步耕评字段空值审计",
+            required_evaluation_field_names(),
+            "第三步必需耕评字段空值审计",
         )
-        logger.info("耕评字段空值审计：\n%s", blank_text)
+        logger.info("必需耕评字段空值审计：\n%s", blank_text)
         if not blank_ok:
-            raise RuntimeError(f"第三步输出耕评字段仍有空值：{blank_stats['missing_values']} 个。详情见日志。")
+            raise RuntimeError(f"第三步输出必需耕评字段仍有空值：{blank_stats['missing_values']} 个。详情见日志。")
 
         stats = {
             **quality_stats,
@@ -1609,7 +1615,6 @@ class LandBlockUpdateApp:
         report_frame.pack(fill="both", expand=True, pady=5)
         action_row = ttk.Frame(report_frame)
         action_row.pack(fill="x")
-        ttk.Button(action_row, text="开始审查", command=self.validate_current_inputs).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="提交更新任务", command=self.submit_job).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="查看历史记录", command=self.show_history).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="打开日志文件夹", command=self.open_logs_folder).pack(side=LEFT, padx=5, pady=4)
@@ -1814,22 +1819,22 @@ class LandBlockUpdateApp:
             self.nearest_mode_var.get(),
         )
 
-    def validate_current_inputs(self) -> None:
+    def validate_current_inputs(self, show_report: bool = True):
         if self.result_source is None:
             messagebox.showwarning("提示", "请先选择第二步结果。")
-            return
+            return None
         if self.block_source is None:
             messagebox.showwarning("提示", "请先选择最新三调图斑。")
-            return
+            return None
         if self.admin_source is None:
             messagebox.showwarning("提示", "请先选择最新行政区。")
-            return
+            return None
         self.update_target_projection()
         if self.target_projection_source is None or self.target_spatial_reference is None:
             messagebox.showwarning("提示", "请先选择有效的统一投影。")
-            return
+            return None
         try:
-            self.log_status("开始审查坐标、字段匹配和固定输出字段结构。")
+            self.log_status("正在进行提交前审查：坐标、字段匹配和固定输出字段结构。")
             report = build_preflight_report(
                 self.result_source,
                 self.block_source,
@@ -1840,11 +1845,13 @@ class LandBlockUpdateApp:
             )
         except Exception as exc:
             messagebox.showerror("审查失败", str(exc))
-            return
+            return None
         self.last_report = report
         self.last_report_key = self.report_key()
-        self.show_report(report, ask_continue=False)
-        self.log_status("审查通过，可以提交更新任务。" if report.ok else "审查未通过，已在报告中列出问题。")
+        if show_report:
+            self.show_report(report, ask_continue=False)
+            self.log_status("审查通过，可以提交更新任务。" if report.ok else "审查未通过，已在报告中列出问题。")
+        return report
 
     def show_report(self, report: TransferPreflightReport, ask_continue: bool) -> bool:
         window = Toplevel(self.root)
@@ -1916,14 +1923,13 @@ class LandBlockUpdateApp:
         try:
             report = self.last_report
             if report is None or self.last_report_key != self.report_key():
-                self.log_status("当前输入没有最新审查报告，正在重新审查。")
-                self.validate_current_inputs()
-                report = self.last_report
+                self.log_status("当前输入没有最新审查报告，正在进行提交前自动审查。")
+                report = self.validate_current_inputs(show_report=False)
             if report is None:
                 return
             if not report.ok or report.admin_binding is None:
                 self.show_report(report, ask_continue=False)
-                messagebox.showerror("审查未通过", "输入数据存在问题，不能更新。请先按报告修正。")
+                self.log_status("提交前审查未通过，任务未提交。")
                 return
         except Exception as exc:
             messagebox.showerror("提交失败", str(exc))

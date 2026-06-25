@@ -9,6 +9,7 @@ from cropland_quality_update.tools import area_balance_arcpy_ui as area_tool
 from cropland_quality_update.tools import fill_tillage_depth_arcpy_ui as depth_tool
 from cropland_quality_update.tools import gb_to_sanpu_arcpy_ui as convert_tool
 from cropland_quality_update.tools import membership_arcpy_ui as membership_tool
+from cropland_quality_update.tools import recalculate_scores_arcpy_ui as recalc_tool
 from cropland_quality_update.tools import update_land_blocks_arcpy_ui as land_tool
 from cropland_quality_update.tools import update_scores_arcpy_ui as score_tool
 
@@ -17,6 +18,15 @@ WINDOW_GEOMETRY = "1280x900"
 WINDOW_MIN_SIZE = (1180, 760)
 SCROLLABLE_WIDGET_CLASSES = {"Treeview", "Text", "Listbox", "Canvas"}
 SCROLLBAR_WIDGET_CLASSES = {"Scrollbar", "TScrollbar"}
+STEP_LABELS = {
+    1: "第一步",
+    2: "第二步",
+    3: "第三步",
+    4: "第四步",
+    5: "辅助：国标转三普",
+    6: "辅助：补耕层厚度",
+    7: "辅助：重算隶属度",
+}
 
 
 class ScrollableStepFrame(ttk.Frame):
@@ -97,6 +107,7 @@ class WorkflowApp:
         self.step_apps: dict[int, object] = {}
         self.active_page: ScrollableStepFrame | None = None
         self._syncing_output_gdb = False
+        self._syncing_area_selection = False
 
         self.build_ui()
         self.show_step(1)
@@ -107,7 +118,7 @@ class WorkflowApp:
 
         selector = ttk.LabelFrame(self.root, text="流程选择")
         selector.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
-        selector.columnconfigure(6, weight=1)
+        selector.columnconfigure(7, weight=1)
         steps = [
             (1, "第一步 计算高标隶属度"),
             (2, "第二步 更新隶属度"),
@@ -115,6 +126,7 @@ class WorkflowApp:
             (4, "第四步 面积平差"),
             (5, "辅助 国标转三普"),
             (6, "辅助 补耕层厚度"),
+            (7, "辅助 重算隶属度"),
         ]
         for column, (index, label) in enumerate(steps):
             ttk.Radiobutton(
@@ -124,10 +136,10 @@ class WorkflowApp:
                 value=index,
                 command=lambda step=index: self.show_step(step),
             ).grid(row=0, column=column, padx=8, pady=6, sticky="w")
-        ttk.Button(selector, text="恢复默认输入", command=self.reset_workflow_inputs).grid(row=0, column=6, padx=12, pady=6, sticky="e")
+        ttk.Button(selector, text="恢复默认输入", command=self.reset_workflow_inputs).grid(row=0, column=7, padx=12, pady=6, sticky="e")
 
         gdb_row = ttk.Frame(selector)
-        gdb_row.grid(row=1, column=0, columnspan=7, sticky="ew", padx=8, pady=(0, 6))
+        gdb_row.grid(row=1, column=0, columnspan=8, sticky="ew", padx=8, pady=(0, 6))
         gdb_row.columnconfigure(1, weight=1)
         ttk.Label(gdb_row, text="统一输出 GDB").grid(row=0, column=0, sticky="w")
         ttk.Entry(gdb_row, textvariable=self.shared_output_gdb_var).grid(row=0, column=1, sticky="ew", padx=6)
@@ -154,7 +166,7 @@ class WorkflowApp:
         self.create_step_pages()
 
     def create_step_pages(self) -> None:
-        for step in range(1, 7):
+        for step in range(1, 8):
             page = ScrollableStepFrame(self.page_host)
             self.step_pages[step] = page
 
@@ -194,7 +206,14 @@ class WorkflowApp:
             shared_status_text=self.status_text,
             on_job_done=lambda payload: self.handle_step_done(6, payload),
         )
+        self.step_apps[7] = recalc_tool.RecalculateScoresApp(
+            self.step_pages[7].content,
+            embedded=True,
+            shared_status_text=self.status_text,
+            on_job_done=lambda payload: self.handle_step_done(7, payload),
+        )
         self.setup_output_gdb_sync()
+        self.setup_area_selection_sync()
 
     def setup_output_gdb_sync(self) -> None:
         self.shared_output_gdb_var.trace_add("write", lambda *_args: self.sync_output_gdb(self.shared_output_gdb_var.get()))
@@ -219,6 +238,52 @@ class WorkflowApp:
         if value.strip().lower().endswith(".gdb"):
             source_text = f"第 {source_step} 步" if source_step else "统一输出栏"
             self.log_status(f"{source_text}已更新输出 GDB，已同步到全部步骤：{value}")
+
+    def setup_area_selection_sync(self) -> None:
+        for step, app in self.step_apps.items():
+            area_var = getattr(app, "area_var", None)
+            if area_var is not None:
+                area_var.trace_add("write", lambda *_args, var=area_var, source_step=step: self.sync_area_selection(var.get(), source_step))
+
+    def ensure_area_option(self, app, value: str) -> bool:
+        options = list(getattr(app, "area_options", []) or [])
+        if value in options:
+            return True
+        loader = getattr(app, "load_area_options", None)
+        if not callable(loader):
+            return False
+        try:
+            options = list(loader())
+        except Exception:
+            return False
+        setattr(app, "area_options", options)
+        combo = getattr(app, "area_combo", None)
+        if combo is not None:
+            combo["values"] = options
+        return value in options
+
+    def sync_area_selection(self, value: str, source_step: int | None = None) -> None:
+        value = value.strip()
+        if self._syncing_area_selection or not value:
+            return
+        self._syncing_area_selection = True
+        synced = 0
+        try:
+            for app in self.step_apps.values():
+                area_var = getattr(app, "area_var", None)
+                if area_var is None or not self.ensure_area_option(app, value):
+                    continue
+                if area_var.get() != value:
+                    area_var.set(value)
+                for attr in ("last_report", "last_report_key"):
+                    if hasattr(app, attr):
+                        setattr(app, attr, None)
+                synced += 1
+        finally:
+            self._syncing_area_selection = False
+        if synced:
+            source_text = STEP_LABELS.get(source_step, "工具") if source_step else "工具"
+            self.log_status(f"{source_text}已更新国标二级农业区，已同步到全部相关工具：{value}")
 
     def choose_shared_output_gdb(self) -> None:
         path = filedialog.asksaveasfilename(title="选择或新建统一输出 FileGDB", defaultextension=".gdb", filetypes=[("File Geodatabase", "*.gdb")])
@@ -261,10 +326,13 @@ class WorkflowApp:
                 self.fill_area_balance_input(output_path)
                 self.show_step(4)
             elif step == 5:
-                self.fill_score_result_input(output_path)
-                self.show_step(2)
+                self.fill_score_result_input(output_path, "国标转三普输出")
+                self.log_status(f"国标转三普输出已填入第二步输入，当前仍停留在辅助工具：{output_path}")
             elif step == 6:
                 self.log_status(f"补耕层厚度输出完成，可作为国标转三普辅助工具的输入：{output_path}")
+            elif step == 7:
+                self.fill_area_balance_input(output_path)
+                self.log_status(f"重算隶属度输出已填入第四步输入，当前仍停留在辅助工具：{output_path}")
         except Exception as exc:
             self.log_status(f"自动填写下一步输入失败：{exc}")
 
@@ -281,7 +349,7 @@ class WorkflowApp:
                 return membership_tool.make_vector_source("gdb", candidate, layer_name)
         raise ValueError(f"无法识别输出数据类型：{output_path}")
 
-    def fill_score_result_input(self, output_path: str) -> None:
+    def fill_score_result_input(self, output_path: str, source_name: str = "第一步输出") -> None:
         app = self.step_apps[2]
         source = self.source_from_output_path(output_path)
         self.set_single_source(
@@ -295,7 +363,7 @@ class WorkflowApp:
             reset_attrs=("last_report", "last_report_key"),
         )
         app.update_target_projection()
-        app.log_status(f"已自动填写第一步输出到第二步输入：{source.display_name}")
+        app.log_status(f"已自动填写{source_name}到第二步输入：{source.display_name}")
 
     def fill_land_result_input(self, output_path: str) -> None:
         app = self.step_apps[3]
@@ -361,10 +429,14 @@ class WorkflowApp:
         self.status_text.see(END)
 
     def reset_workflow_inputs(self) -> None:
-        for app in self.step_apps.values():
-            reset = getattr(app, "reset_inputs", None)
-            if callable(reset):
-                reset()
+        self._syncing_area_selection = True
+        try:
+            for app in self.step_apps.values():
+                reset = getattr(app, "reset_inputs", None)
+                if callable(reset):
+                    reset()
+        finally:
+            self._syncing_area_selection = False
         self.shared_output_gdb_var.set("")
         self.show_step(1)
         self.log_status("已恢复各步骤输入和参数的启动默认值；详细信息记录保留。")
@@ -378,6 +450,7 @@ def main() -> int:
         area_tool.require_runtime,
         convert_tool.require_runtime,
         depth_tool.require_runtime,
+        recalc_tool.require_runtime,
     ):
         try:
             require()

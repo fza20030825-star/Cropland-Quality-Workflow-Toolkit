@@ -804,6 +804,19 @@ def optional_indicators_for_area(area_name: str) -> set[str]:
     return set() if area_name in ALTITUDE_REQUIRED_AREAS else {"海拔高度"}
 
 
+def validation_bindings_for_area(
+    bindings: dict[str, FieldBinding],
+    rule_set: RuleSet,
+    optional_indicators: set[str],
+) -> dict[str, FieldBinding]:
+    rule_indicators = set(rule_set.indicators)
+    return {
+        indicator: binding
+        for indicator, binding in bindings.items()
+        if indicator not in optional_indicators or indicator in rule_indicators
+    }
+
+
 def validate_high_standard_sources(
     sources: list[VectorSource],
     rule_set: RuleSet,
@@ -829,9 +842,10 @@ def validate_high_standard_sources(
         missing_issues: list[MissingValueIssue] = []
         invalid_issues: list[InvalidCategoryIssue] = []
         if not missing_fields and not ambiguous_fields:
-            type_errors = standard_indicator_type_errors(bindings)
+            checked_bindings = validation_bindings_for_area(bindings, rule_set, optional_indicators)
+            type_errors = standard_indicator_type_errors(checked_bindings)
             if not type_errors:
-                type_errors, missing_issues, invalid_issues = collect_validation_issues(source, rule_set, bindings)
+                type_errors, missing_issues, invalid_issues = collect_validation_issues(source, rule_set, checked_bindings)
         source_results.append(
             SourceValidationResult(
                 source=source,
@@ -1607,6 +1621,18 @@ def insert_order_erased_candidates(
     return inserted
 
 
+def count_overlap_marked_features(output_fc: str, overlap_field: str) -> int:
+    count = 0
+    with arcpy.da.SearchCursor(output_fc, [overlap_field]) as cursor:
+        for (value,) in cursor:
+            try:
+                if int(value) == 1:
+                    count += 1
+            except (TypeError, ValueError):
+                continue
+    return count
+
+
 def calculate_high_standard_output(
     job: HighStandardCalculationJob,
     temp_dir: Path,
@@ -1639,7 +1665,7 @@ def calculate_high_standard_output(
     required_indicators = [
         indicator
         for indicator in STANDARD_INDICATOR_FIELDS
-        if indicator not in optional or any(indicator in result.field_bindings for result in job.source_results)
+        if indicator not in optional or indicator in job.rule_set.indicators
     ]
     check_fields = [field_map[indicator] for indicator in required_indicators]
     check_fields += [field_map[f"F{indicator}"] for indicator in required_indicators if indicator in job.rule_set.indicators]
@@ -1650,6 +1676,14 @@ def calculate_high_standard_output(
     logger.info("结果完整性审计：\n%s", audit_text)
     if not ok:
         raise RuntimeError(f"计算后仍有结果字段空值：{audit_stats['missing_values']} 个。详情见日志。")
+    if job.overlap_mode == OVERLAP_MODE_MARK:
+        overlap_marked_count = count_overlap_marked_features(output_fc, field_map[OVERLAP_MARK_FIELD])
+        audit_stats["overlap_marked_count"] = overlap_marked_count
+        audit_stats["overlap_mark_field_all_zero"] = int(overlap_marked_count == 0)
+        if overlap_marked_count:
+            logger.warning("最终输出字段“%s”中有 %s 个要素标记为 1，存在重叠。", OVERLAP_MARK_FIELD, overlap_marked_count)
+        else:
+            logger.info("最终输出字段“%s”全为 0，未发现需要标记的重叠要素。", OVERLAP_MARK_FIELD)
     logger.info("输出完成：%s；计算要素数：%s", output_fc, calculated)
     return output_fc, calculated, audit_stats
 
@@ -1735,13 +1769,21 @@ class CalculationWorker(threading.Thread):
             logger.info("检查报告：\n%s", job.validation_report)
             output_fc, count, audit_stats = calculate_high_standard_output(job, temp_dir, logger)
             record.update({"status": "success", "calculated_count": count, "output_path": output_fc, "audit_stats": audit_stats})
+            overlap_message = ""
+            if job.overlap_mode == OVERLAP_MODE_MARK:
+                overlap_count = int(audit_stats.get("overlap_marked_count") or 0)
+                if overlap_count:
+                    overlap_message = f"；重叠标记：有，{overlap_count} 个要素的“{OVERLAP_MARK_FIELD}”=1"
+                else:
+                    overlap_message = f"；重叠标记：无，“{OVERLAP_MARK_FIELD}”字段全为 0"
             self.send(
                 "job_done",
                 {
                     "job_id": job.job_id,
-                    "message": f"高标隶属度计算完成：{output_fc}；要素数 {count}",
+                    "message": f"高标隶属度计算完成：{output_fc}；要素数 {count}{overlap_message}",
                     "output_path": output_fc,
                     "log_path": str(log_path),
+                    "audit_stats": audit_stats,
                 },
             )
         except Exception as exc:
@@ -1864,8 +1906,7 @@ class MembershipApp:
         buttons.pack(fill="x")
         ttk.Button(buttons, text="全选", command=lambda: self.source_checklist.select_all(True)).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(buttons, text="全不选", command=lambda: self.source_checklist.select_all(False)).pack(side=LEFT, padx=5, pady=4)
-        ttk.Button(buttons, text="审查字段和投影", command=self.validate_current_input).pack(side=LEFT, padx=5, pady=4)
-        self.source_checklist = vector_tool.ScrollableCheckList(file_frame)
+        self.source_checklist = vector_tool.ScrollableCheckList(file_frame, on_change=self.refresh_projection_preview)
         self.source_checklist.pack(fill="both", expand=True, padx=5, pady=5)
 
         projection_frame = ttk.LabelFrame(container, text="4. 投影确认")
@@ -1905,7 +1946,7 @@ class MembershipApp:
         projection_text_x.grid(row=1, column=0, sticky="ew")
         projection_text_frame.rowconfigure(0, weight=1)
         projection_text_frame.columnconfigure(0, weight=1)
-        self.projection_text.insert(END, "选择并审查输入数据后，这里会显示统一投影。")
+        self.projection_text.insert(END, "勾选输入数据后，这里会显示投影和统一投影来源。")
 
         overlap_frame = ttk.LabelFrame(container, text="5. 源间重叠处理")
         overlap_frame.pack(fill="x", pady=5)
@@ -1941,7 +1982,6 @@ class MembershipApp:
         report_frame.pack(fill="both", expand=True, pady=5)
         action_row = ttk.Frame(report_frame)
         action_row.pack(fill="x")
-        ttk.Button(action_row, text="开始审查", command=self.validate_current_input).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="提交计算任务", command=self.submit_job).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="查看历史记录", command=self.show_history).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="打开日志文件夹", command=self.open_logs_folder).pack(side=LEFT, padx=5, pady=4)
@@ -1952,7 +1992,7 @@ class MembershipApp:
         else:
             self.status_text = self.shared_status_text
             ttk.Label(report_frame, text="运行详细信息显示在窗口底部“详细信息”区域。").pack(anchor="w", padx=5, pady=5)
-        self.log_status("第一步工具已启动。请添加高标准农田面数据，选择国标二级农业区后执行审查。")
+        self.log_status("第一步工具已启动。请添加并勾选高标准农田面数据，选择国标二级农业区后提交任务。")
 
     def check_rule_file(self) -> None:
         if not self.area_var.get().strip():
@@ -2075,6 +2115,37 @@ class MembershipApp:
         for info in infos:
             self.projection_tree.insert("", END, values=(source_label(info.source), info.message))
 
+    def refresh_projection_preview(self) -> None:
+        if not hasattr(self, "projection_tree"):
+            return
+        sources = self.selected_sources()
+        self.last_report = None
+        self.refresh_reference_choices(sources)
+        self.target_source = None
+        self.target_spatial_reference = None
+        if not sources:
+            self.projection_infos = []
+            self.projections_same = False
+            self.fill_projection_table([])
+            if hasattr(self, "projection_text"):
+                self.projection_text.delete("1.0", END)
+                self.projection_text.insert(END, "勾选输入数据后，这里会显示投影和统一投影来源。")
+            return
+        try:
+            projection_infos, projections_same = vector_tool.analyze_projection_state(sources)
+        except Exception as exc:
+            self.projection_infos = []
+            self.projections_same = False
+            self.fill_projection_table([])
+            if hasattr(self, "projection_text"):
+                self.projection_text.delete("1.0", END)
+                self.projection_text.insert(END, f"投影读取失败：{exc}")
+            return
+        self.projection_infos = projection_infos
+        self.projections_same = projections_same
+        self.fill_projection_table(projection_infos)
+        self.update_target_projection()
+
     def choose_extra_reference(self) -> None:
         path = filedialog.askopenfilename(title="选择投影参考 shp", filetypes=[("Shapefile", "*.shp")])
         if path:
@@ -2121,25 +2192,20 @@ class MembershipApp:
             source_label(self.target_source) if self.target_source else "",
         )
 
-    def validate_current_input(self) -> None:
+    def validate_current_input(self, show_report: bool = True):
         sources = self.selected_sources()
         if not sources:
             messagebox.showwarning("提示", "请先勾选需要计算的高标准农田面数据。")
-            return
+            return None
         if not self.area_var.get().strip():
             messagebox.showwarning("提示", "请先选择国标二级农业区。")
-            return
+            return None
         try:
-            self.log_status("开始审查投影、字段匹配、字段类型、空值和类别值。")
-            self.refresh_reference_choices(sources)
-            projection_infos, projections_same = vector_tool.analyze_projection_state(sources)
-            self.projection_infos = projection_infos
-            self.projections_same = projections_same
-            self.fill_projection_table(projection_infos)
-            self.update_target_projection()
+            self.log_status("正在进行提交前审查：投影、字段匹配、字段类型、空值和类别值。")
+            self.refresh_projection_preview()
             if self.target_source is None or self.target_spatial_reference is None:
                 messagebox.showwarning("提示", "请先选择有效的统一投影。")
-                return
+                return None
             rule_set = load_rule_set(self.rules_dir, self.area_var.get())
             report = validate_high_standard_sources(
                 sources,
@@ -2149,14 +2215,16 @@ class MembershipApp:
             )
         except Exception as exc:
             messagebox.showerror("审查失败", str(exc))
-            return
+            return None
         self.last_report = report
         self.last_report_key = self.report_key()
-        self.show_report(report, ask_continue=False)
-        if report.ok:
-            self.log_status("审查通过，可以提交第一步计算任务。")
-        else:
-            self.log_status("审查未通过，已在报告中列出问题。")
+        if show_report:
+            self.show_report(report, ask_continue=False)
+            if report.ok:
+                self.log_status("审查通过，可以提交第一步计算任务。")
+            else:
+                self.log_status("审查未通过，已在报告中列出问题。")
+        return report
 
     def show_report(self, report: HighStandardPreflightReport, ask_continue: bool) -> bool:
         window = Toplevel(self.root)
@@ -2232,14 +2300,13 @@ class MembershipApp:
         try:
             report = self.last_report
             if report is None or self.last_report_key != self.report_key():
-                self.log_status("当前输入没有最新审查报告，正在重新审查。")
-                self.validate_current_input()
-                report = self.last_report
+                self.log_status("当前输入没有最新审查报告，正在进行提交前自动审查。")
+                report = self.validate_current_input(show_report=False)
             if report is None:
                 return
             if not report.ok:
                 self.show_report(report, ask_continue=False)
-                messagebox.showerror("检查未通过", "输入数据存在问题，不能计算。请先按报告修正。")
+                self.log_status("提交前审查未通过，任务未提交。")
                 return
         except Exception as exc:
             messagebox.showerror("提交失败", str(exc))
@@ -2306,6 +2373,14 @@ class MembershipApp:
             except json.JSONDecodeError:
                 text.insert(END, line + "\n")
                 continue
+            audit_stats = record.get("audit_stats") or {}
+            overlap_count = audit_stats.get("overlap_marked_count")
+            overlap_line = ""
+            if overlap_count is not None:
+                if int(overlap_count):
+                    overlap_line = f"重叠标记：有，{int(overlap_count)} 个要素的“{OVERLAP_MARK_FIELD}”=1\n"
+                else:
+                    overlap_line = f"重叠标记：无，“{OVERLAP_MARK_FIELD}”字段全为 0\n"
             text.insert(
                 END,
                 f"任务 {record.get('job_id')} | {record.get('status')} | {record.get('created_at')}\n"
@@ -2314,6 +2389,7 @@ class MembershipApp:
                 f"规则：{record.get('rule_path')}\n"
                 f"重叠处理：{record.get('overlap_mode') or ''}\n"
                 f"统计：{record.get('calculated_count')}\n"
+                f"{overlap_line}"
                 f"日志：{record.get('log_path')}\n"
                 f"错误：{record.get('error') or ''}\n\n",
             )
@@ -2370,7 +2446,7 @@ class MembershipApp:
                 self.projection_tree.delete(item)
         if hasattr(self, "projection_text"):
             self.projection_text.delete("1.0", END)
-            self.projection_text.insert(END, "选择并审查输入数据后，这里会显示统一投影。")
+            self.projection_text.insert(END, "勾选输入数据后，这里会显示投影和统一投影来源。")
         self.log_status("第一步输入和参数已恢复为启动默认值。")
 
 

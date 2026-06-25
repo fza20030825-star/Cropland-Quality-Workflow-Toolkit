@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from cropland_quality_update.tools.membership_arcpy_ui import output_dataset_path as membership_output_dataset_path
+from cropland_quality_update.tools.recalculate_scores_arcpy_ui import output_dataset_path as recalculate_output_dataset_path
 from cropland_quality_update.tools.update_scores_arcpy_ui import output_dataset_path as update_output_dataset_path
 from cropland_quality_update.tools.update_land_blocks_arcpy_ui import output_dataset_path as land_block_output_dataset_path
 from cropland_quality_update.tools.area_balance_arcpy_ui import output_dataset_path as area_balance_output_dataset_path
@@ -15,6 +16,7 @@ def test_output_dataset_path_shp():
     assert update_output_dataset_path("shp", path, None) == path
     assert land_block_output_dataset_path("shp", path, None) == path
     assert area_balance_output_dataset_path("shp", path, None) == path
+    assert recalculate_output_dataset_path("shp", path, None) == path
 
 
 def test_output_dataset_path_gdb_feature_class():
@@ -25,3 +27,4 @@ def test_output_dataset_path_gdb_feature_class():
     assert update_output_dataset_path("gdb", gdb, "new_layer") == gdb / "new_layer"
     assert land_block_output_dataset_path("gdb", gdb, "new_layer") == gdb / "new_layer"
     assert area_balance_output_dataset_path("gdb", gdb, "new_layer") == gdb / "new_layer"
+    assert recalculate_output_dataset_path("gdb", gdb, "new_layer") == gdb / "new_layer"

@@ -694,7 +694,6 @@ class AreaBalanceApp:
         report_frame.pack(fill="both", expand=True, pady=5)
         action_row = ttk.Frame(report_frame)
         action_row.pack(fill="x")
-        ttk.Button(action_row, text="开始审查", command=self.validate_current_inputs).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="提交平差任务", command=self.submit_job).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="查看历史记录", command=self.show_history).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="打开日志文件夹", command=self.open_logs_folder).pack(side=LEFT, padx=5, pady=4)
@@ -784,24 +783,26 @@ class AreaBalanceApp:
         area_values = tuple((code, self.official_area_vars[code].get().strip()) for code, _name in CROPLAND_CLASSES)
         return (self.source, area_values)
 
-    def validate_current_inputs(self) -> None:
+    def validate_current_inputs(self, show_report: bool = True):
         if self.source is None:
             messagebox.showwarning("提示", "请先选择第三步结果。")
-            return
+            return None
         official_areas = self.current_official_areas()
         if official_areas is None:
-            return
+            return None
         try:
-            self.log_status("开始审查字段、实体面积汇总和三类平差系数。")
+            self.log_status("正在进行提交前审查：字段、实体面积汇总和三类平差系数。")
             report = build_preflight_report(self.source, official_areas)
         except Exception as exc:
             messagebox.showerror("审查失败", str(exc))
-            return
+            return None
         self.last_report = report
         self.last_report_key = self.report_key()
         self.update_coefficient_preview(report)
-        self.show_report(report, ask_continue=False)
-        self.log_status("审查通过，可以提交平差任务。" if report.ok else "审查未通过，已在报告中列出问题。")
+        if show_report:
+            self.show_report(report, ask_continue=False)
+            self.log_status("审查通过，可以提交平差任务。" if report.ok else "审查未通过，已在报告中列出问题。")
+        return report
 
     def update_coefficient_preview(self, report: AreaBalancePreflightReport) -> None:
         stats_by_code = {stat.code: stat for stat in report.class_stats}
@@ -884,14 +885,13 @@ class AreaBalanceApp:
         try:
             report = self.last_report
             if report is None or self.last_report_key != self.report_key():
-                self.log_status("当前输入没有最新审查报告，正在重新审查。")
-                self.validate_current_inputs()
-                report = self.last_report
+                self.log_status("当前输入没有最新审查报告，正在进行提交前自动审查。")
+                report = self.validate_current_inputs(show_report=False)
             if report is None:
                 return
             if not report.ok:
                 self.show_report(report, ask_continue=False)
-                messagebox.showerror("审查未通过", "输入数据或面积参数存在问题，不能平差。请先按报告修正。")
+                self.log_status("提交前审查未通过，任务未提交。")
                 return
         except Exception as exc:
             messagebox.showerror("提交失败", str(exc))

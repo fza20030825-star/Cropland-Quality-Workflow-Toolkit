@@ -596,7 +596,6 @@ class TillageDepthFillApp:
         report_frame.pack(fill="both", expand=True, pady=5)
         action_row = ttk.Frame(report_frame)
         action_row.pack(fill="x")
-        ttk.Button(action_row, text="开始审查", command=self.validate_current_input).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="提交补充任务", command=self.submit_job).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="查看历史记录", command=self.show_history).pack(side=LEFT, padx=5, pady=4)
         ttk.Button(action_row, text="打开日志文件夹", command=self.open_logs_folder).pack(side=LEFT, padx=5, pady=4)
@@ -607,7 +606,7 @@ class TillageDepthFillApp:
         else:
             self.status_text = self.shared_status_text
             ttk.Label(report_frame, text="运行详细信息显示在窗口底部“详细信息”区域。").pack(anchor="w", padx=5, pady=5)
-        self.log_status("三普补耕层厚度工具已启动。请选择高标单元图、三普单元图和输出 GDB 后先审查。")
+        self.log_status("三普补耕层厚度工具已启动。请选择高标单元图、三普单元图和输出 GDB，提交时会自动审查。")
 
     def refresh_area_options(self) -> None:
         self.area_options = self.load_area_options()
@@ -718,27 +717,29 @@ class TillageDepthFillApp:
             self.overwrite_existing_var.get(),
         )
 
-    def validate_current_input(self) -> None:
+    def validate_current_input(self, show_report: bool = True):
         if self.high_source is None:
             messagebox.showwarning("提示", "请先选择高标单元图。")
-            return
+            return None
         if self.sanpu_source is None:
             messagebox.showwarning("提示", "请先选择三普单元图。")
-            return
+            return None
         if not self.area_var.get().strip():
             messagebox.showwarning("提示", "请先选择国标二级农业区。")
-            return
+            return None
         try:
             rule_set = membership_tool.load_rule_set(self.rules_dir, self.area_var.get())
-            self.log_status("开始审查三普耕层厚度字段和值。")
+            self.log_status("正在进行提交前审查：三普耕层厚度字段和值。")
             report = validate_depth_fill_sources(self.high_source, self.sanpu_source, rule_set)
         except Exception as exc:
             messagebox.showerror("审查失败", str(exc))
-            return
+            return None
         self.last_report = report
         self.last_report_key = self.report_key()
-        self.show_report(report, ask_continue=False)
-        self.log_status("审查通过，可以提交补充任务。" if report.ok else "审查未通过，已在报告中列出问题。")
+        if show_report:
+            self.show_report(report, ask_continue=False)
+            self.log_status("审查通过，可以提交补充任务。" if report.ok else "审查未通过，已在报告中列出问题。")
+        return report
 
     def show_report(self, report: DepthFillReport, ask_continue: bool) -> bool:
         window = Toplevel(self.root)
@@ -805,14 +806,13 @@ class TillageDepthFillApp:
         try:
             report = self.last_report
             if report is None or self.last_report_key != self.report_key():
-                self.log_status("当前输入没有最新审查报告，正在重新审查。")
-                self.validate_current_input()
-                report = self.last_report
+                self.log_status("当前输入没有最新审查报告，正在进行提交前自动审查。")
+                report = self.validate_current_input(show_report=False)
             if report is None:
                 return
             if not report.ok or report.depth_binding is None:
                 self.show_report(report, ask_continue=False)
-                messagebox.showerror("检查未通过", "输入数据存在问题，不能补充。请先按报告修正。")
+                self.log_status("提交前审查未通过，任务未提交。")
                 return
         except Exception as exc:
             messagebox.showerror("提交失败", str(exc))
